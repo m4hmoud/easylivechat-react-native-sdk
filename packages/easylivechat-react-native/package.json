@@ -1,0 +1,73 @@
+{
+  "name": "@easylivechat/react-native",
+  "version": "0.1.0",
+  "description": "Headless React Native client for EasyLiveChat real-time customer support: sessions, messages, attachments, typing, presence and pre/post-chat forms over HTTP and Socket.IO. No UI.",
+  "license": "MIT",
+  "homepage": "https://livechattools.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/m4hmoud/easylivechat-react-native-sdk.git",
+    "directory": "packages/easylivechat-react-native"
+  },
+  "keywords": [
+    "chat",
+    "live-chat",
+    "customer-support",
+    "messaging",
+    "socket-io",
+    "react-native",
+    "expo"
+  ],
+  "main": "./lib/index.cjs",
+  "module": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "react-native": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "react-native": "./src/index.ts",
+      "import": "./lib/index.js",
+      "require": "./lib/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.8.1"
+  },
+  "peerDependencies": {
+    "expo-crypto": ">=13.0.0",
+    "react": ">=18.0.0",
+    "react-native": ">=0.76.0"
+  },
+  "peerDependenciesMeta": {
+    "expo-crypto": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-test-renderer": "^18.3.0",
+    "react": "18.3.1",
+    "react-native": "0.76.5",
+    "react-test-renderer": "18.3.1",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

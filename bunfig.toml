@@ -1,0 +1,7 @@
+# React Native's Metro bundler cannot resolve Bun's default ISOLATED
+# node_modules layout: `@expo/metro-config` requires its own transitive deps
+# (expo-asset and friends) by bare specifier from inside `.bun/…`, and Metro's
+# haste/asset resolution assumes a flat tree. Hoisting is what every RN and
+# Expo toolchain expects.
+[install]
+linker = "hoisted"

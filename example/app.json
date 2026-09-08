@@ -1,0 +1,41 @@
+{
+  "expo": {
+    "name": "EasyLiveChat Example",
+    "slug": "easylivechat-example",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "scheme": "easylivechatexample",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.easylivechat.example",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Attach a photo to your support conversation.",
+        "NSMicrophoneUsageDescription": "Record a voice message for the support team."
+      }
+    },
+    "android": {
+      "package": "com.easylivechat.example",
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "kotlinVersion": "1.9.25"
+          }
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Attach a photo to your support conversation."
+        }
+      ]
+    ]
+  }
+}
