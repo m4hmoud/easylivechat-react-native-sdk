@@ -41,7 +41,7 @@
     },
     "packages/easylivechat-react-native": {
       "name": "@easylivechat/react-native",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "socket.io-client": "^4.8.1",
       },
@@ -66,9 +66,9 @@
     },
     "packages/easylivechat-react-native-ui": {
       "name": "@easylivechat/react-native-ui",
-      "version": "0.1.0",
+      "version": "0.1.4",
       "dependencies": {
-        "@easylivechat/react-native": "0.1.0",
+        "@easylivechat/react-native": "^0.1.1",
       },
       "devDependencies": {
         "@types/node": "^22.10.2",
@@ -82,6 +82,7 @@
         "@react-native-async-storage/async-storage": ">=1.23.0",
         "expo-audio": ">=0.3.0",
         "expo-document-picker": ">=12.0.0",
+        "expo-file-system": ">=17.0.0",
         "expo-image": ">=1.13.0",
         "expo-image-picker": ">=15.0.0",
         "expo-linking": ">=6.3.0",
@@ -92,6 +93,7 @@
       "optionalPeers": [
         "expo-audio",
         "expo-document-picker",
+        "expo-file-system",
         "expo-image",
         "expo-image-picker",
         "expo-linking",
