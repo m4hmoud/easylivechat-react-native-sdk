@@ -22,6 +22,11 @@ declare module 'expo-audio' {
   export = mod;
 }
 
+declare module 'expo-file-system' {
+  const mod: unknown;
+  export = mod;
+}
+
 declare module 'expo-image' {
   const mod: unknown;
   export = mod;

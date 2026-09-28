@@ -188,6 +188,49 @@ describe('optimistic send and reconcile', () => {
     socket.fire('message:new', messageRow({ id: 'c', createdAt: '2026-09-01T09:00:00.000Z' }));
     expect(controller.messages.get().map((m) => m.id)).toEqual(['c', 'a', 'b']);
   });
+
+  /**
+   * The reconnect path, which the live-echo tests above cannot reach.
+   *
+   * `message:new` is live-only. A send whose echo lands while the socket is
+   * down is recovered from REST by the reconnect backfill — and an id
+   * comparison cannot see the `tmp-` row it belongs to, because that row has
+   * no server id yet. Before this was fixed the thread showed the message
+   * twice and one copy stayed on the clock: the agent had it, the visitor was
+   * told it never sent.
+   *
+   * Nothing else rescues it. The 20s ack timer is a `setTimeout`, which does
+   * not run while the app is suspended — precisely when sockets drop — and
+   * firing it marks the row FAILED, not sent.
+   */
+  it('lets the reconnect backfill consume a pending row, not sit beside it', async () => {
+    const socket = latestSocket('/widgets');
+    // The socket went down before the ack came back.
+    socket.ackResponder = () => undefined;
+    const { optimistic } = controller.sendMessage('hello there');
+    expect(isLocalTemp(optimistic)).toBe(true);
+
+    // The server did store it; we were simply not listening for the echo.
+    server.always('/messages', {
+      body: {
+        messages: [messageRow({ id: 'srv-1', body: 'hello there', senderType: 'CUSTOMER' })],
+        nextCursor: null,
+      },
+    });
+
+    socket.disconnect();
+    socket.connect();
+    // Wait on the backfill having RUN. Waiting on the row count would pass
+    // immediately — the pending row already makes it 1, which is what made an
+    // earlier version of this test green against the bug it exists to catch.
+    await vi.waitFor(() => expect(server.requestsFor('/messages').length).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(controller.messages.get()[0]?.id).toBe('srv-1'));
+
+    const rows = controller.messages.get();
+    expect(rows.map((m) => m.id)).toEqual(['srv-1']);
+    expect(rows.some((m) => isLocalTemp(m))).toBe(false);
+    expect(rows[0]?.isOptimistic).toBe(false);
+  });
 });
 
 describe('unread counting', () => {

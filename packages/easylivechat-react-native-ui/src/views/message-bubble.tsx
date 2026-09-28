@@ -27,6 +27,7 @@ import type { Strings } from '../l10n';
 import { ERROR_COLOR, type EasyLiveChatTheme, onColor, withAlpha } from '../theme';
 import { LinkifiedText } from './linkified-text';
 import { RemoteImage } from './remote-image';
+import { VoiceNoteTile, looksLikeAudio } from './voice-note-tile';
 import { MAX_FONT_SCALE } from '../text-scaling';
 
 export interface MessageBubbleProps {
@@ -180,21 +181,32 @@ function ChatBubble({
   // neutral circle when there is no name either.
   const withAvatar = !customer && showAgentAvatar;
 
-  const tiles = useMemo(
-    () => attachmentTiles(message, textColor, theme, strings, onOpenImage, dir),
-    [message, textColor, theme, strings, onOpenImage, dir],
-  );
-
-  // A message that is ONLY pictures gets no bubble. The bubble exists to put a
-  // surface behind text; wrapped around a photo it becomes a thick coloured
-  // frame — on the visitor's own side that is the full accent colour, so their
-  // own images arrived matted in blue. Every other messenger renders a bare
-  // photo, and the tile already rounds its own corners.
+  // A message that is ONLY self-drawn media gets no bubble. The bubble exists
+  // to put a surface behind text; wrapped around a photo or a voice note it
+  // becomes a second card around a first — on the visitor's own side the full
+  // accent colour, so their own images arrived matted in blue and their own
+  // recording in a coloured frame. Both already round their own corners.
   //
   // Deliberately strict: a caption needs the bubble behind it, and so does a
   // file chip or an unavailable-media placeholder — those read as controls and
   // would float loose without a surface.
-  const imageOnly = isImageOnly(message);
+  const bareMedia = isBareMedia(message);
+
+  const tiles = useMemo(
+    () =>
+      attachmentTiles(
+        message,
+        textColor,
+        theme,
+        strings,
+        onOpenImage,
+        dir,
+        // Standing alone, a voice note has to paint the surface the bubble
+        // would have; inside one it stays an inlay.
+        bareMedia ? bubbleColor : undefined,
+      ),
+    [message, textColor, theme, strings, onOpenImage, dir, bareMedia, bubbleColor],
+  );
 
   const receipt = receiptFor(message, agentLastReadAt);
 
@@ -211,15 +223,15 @@ function ChatBubble({
           styles.bubble,
           {
             maxWidth: withAvatar ? '84%' : '92%',
-            backgroundColor: imageOnly ? 'transparent' : bubbleColor,
-            paddingHorizontal: imageOnly ? 0 : 14,
-            paddingVertical: imageOnly ? 0 : 10,
+            backgroundColor: bareMedia ? 'transparent' : bubbleColor,
+            paddingHorizontal: bareMedia ? 0 : 14,
+            paddingVertical: bareMedia ? 0 : 10,
             // Logical corners: the tail hugs the sender's own side in RTL too.
             borderTopStartRadius: 16,
             borderTopEndRadius: 16,
             borderBottomStartRadius: customer ? 16 : 4,
             borderBottomEndRadius: customer ? 4 : 16,
-            borderWidth: customer || imageOnly ? 0 : StyleSheet.hairlineWidth,
+            borderWidth: customer || bareMedia ? 0 : StyleSheet.hairlineWidth,
             borderColor: withAlpha(theme.text, 0.08),
           },
         ]}
@@ -435,18 +447,23 @@ function attachmentTiles(
   strings: Strings,
   onOpenImage: (uri: string) => void,
   dir: DirectionStyles,
+  /**
+   * The surface a voice note must paint for itself, set only when this
+   * message dropped its bubble. Undefined leaves the tile an inlay.
+   */
+  bubbleColor?: string,
 ): React.JSX.Element[] {
   const tiles: React.JSX.Element[] = [];
   // Prefer the RICH rehosted list when present (post re-host); fall back to
   // the flat URL list otherwise.
   if (message.attachments.length > 0) {
     message.attachments.forEach((a, i) => {
-      tiles.push(richTile(a, i, fg, theme, strings, onOpenImage, dir));
+      tiles.push(richTile(a, i, fg, theme, strings, onOpenImage, dir, bubbleColor));
     });
     return tiles;
   }
   message.attachmentUrls.forEach((raw, i) => {
-    tiles.push(urlTile(raw, i, fg, theme, strings, onOpenImage, dir));
+    tiles.push(urlTile(raw, i, fg, theme, strings, onOpenImage, dir, bubbleColor));
   });
   return tiles;
 }
@@ -459,11 +476,18 @@ function richTile(
   strings: Strings,
   onOpenImage: (uri: string) => void,
   dir: DirectionStyles,
+  bubbleColor?: string,
 ): React.JSX.Element {
   if (!isResolvableUrl(a.url)) return unavailableChip(key, fg, strings, dir);
   const url = EasyLiveChat.instance.resolveUrl(a.url);
   if (a.kind === 'image') return inlineImage(url, key, fg, theme, strings, onOpenImage, dir);
-  return fileChip(a.filename ?? basename(a.url), key, fg, strings, dir);
+  const label = a.filename ?? basename(a.url);
+  // The server's `kind` is authoritative — it comes from the mime type, so it
+  // catches a container this end has never heard of.
+  if (a.kind === 'audio' || looksLikeAudio(a.url)) {
+    return voiceTile(url, label, key, fg, strings, dir, bubbleColor);
+  }
+  return fileChip(label, key, fg, strings, dir);
 }
 
 function urlTile(
@@ -474,12 +498,41 @@ function urlTile(
   strings: Strings,
   onOpenImage: (uri: string) => void,
   dir: DirectionStyles,
+  bubbleColor?: string,
 ): React.JSX.Element {
   // `wa:media:{id}` and similar placeholders.
   if (!isResolvableUrl(raw)) return unavailableChip(key, fg, strings, dir);
   const url = EasyLiveChat.instance.resolveUrl(raw);
   if (looksLikeImage(raw)) return inlineImage(url, key, fg, theme, strings, onOpenImage, dir);
+  if (looksLikeAudio(raw)) return voiceTile(url, basename(raw), key, fg, strings, dir, bubbleColor);
   return fileChip(basename(raw), key, fg, strings, dir);
+}
+
+/**
+ * Keyed by url so playback survives the thread re-rendering around it — a
+ * message arriving mid-listen must not restart what is playing.
+ */
+function voiceTile(
+  url: string,
+  label: string,
+  key: number,
+  fg: string,
+  strings: Strings,
+  dir: DirectionStyles,
+  /** Set only when the bubble has been dropped and the tile IS the card. */
+  background?: string,
+): React.JSX.Element {
+  return (
+    <VoiceNoteTile
+      key={`voice:${url}`}
+      url={url}
+      fg={fg}
+      strings={strings}
+      dir={dir}
+      background={background}
+      fallback={fileChip(label, key, fg, strings, dir)}
+    />
+  );
 }
 
 function inlineImage(
@@ -649,14 +702,27 @@ function trimmedOrNull(v: string | undefined): string | null {
   return t != null && t.length > 0 ? t : null;
 }
 
-/** True when this message is nothing but pictures that will actually render. */
-export function isImageOnly(message: ChatMessage): boolean {
+/**
+ * True when this message is nothing but media that draws its own surface.
+ *
+ * A picture, or a voice note: both already round their own corners, so the
+ * bubble around them is a second card holding a first one. On the visitor's
+ * own side that is the full accent colour, so their own recording arrived
+ * matted in a coloured frame.
+ */
+export function isBareMedia(message: ChatMessage): boolean {
   if ((message.body ?? '').trim().length > 0) return false;
   if (message.attachments.length > 0) {
-    return message.attachments.every((a) => isResolvableUrl(a.url) && a.kind === 'image');
+    return message.attachments.every(
+      (a) =>
+        isResolvableUrl(a.url) &&
+        (a.kind === 'image' || a.kind === 'audio' || looksLikeAudio(a.url)),
+    );
   }
   if (message.attachmentUrls.length > 0) {
-    return message.attachmentUrls.every((u) => isResolvableUrl(u) && looksLikeImage(u));
+    return message.attachmentUrls.every(
+      (u) => isResolvableUrl(u) && (looksLikeImage(u) || looksLikeAudio(u)),
+    );
   }
   return false;
 }

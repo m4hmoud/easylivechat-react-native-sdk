@@ -159,6 +159,15 @@ export function CloseIcon({ color, size = 18 }: IconProps): React.JSX.Element {
 }
 
 /** A paper-plane-ish send arrow: a chevron with a stem. */
+/**
+ * A paper-plane send arrow.
+ *
+ * DIRECTIONAL. It points the way text flows, so every call site must wrap it
+ * in `directionStyles.mirror` — the same rule `BackIcon` carries. Flutter gets
+ * this free from `matchTextDirection` on `Icons.send_rounded`; these icons are
+ * drawn from Views, so mirroring is opt-in and easy to forget. It was forgotten
+ * once, on the voice-note send button.
+ */
 export function SendIcon({ color, size = 20 }: IconProps): React.JSX.Element {
   const s = size;
   const thickness = Math.max(1.5, s * 0.1);
@@ -247,7 +256,13 @@ export function MicIcon({ color, size = 22 }: IconProps): React.JSX.Element {
   );
 }
 
-/** A filled square — stop recording (and send). */
+/**
+ * A filled square.
+ *
+ * No longer used by the SDK itself: the recording bar's button SENDS, so it
+ * draws [SendIcon]. Kept because the icon set is part of the public API and a
+ * host may be drawing its own controls with it.
+ */
 export function StopIcon({ color, size = 16 }: IconProps): React.JSX.Element {
   return (
     <IconBox size={size}>
@@ -259,6 +274,54 @@ export function StopIcon({ color, size = 16 }: IconProps): React.JSX.Element {
           backgroundColor: color,
         }}
       />
+    </IconBox>
+  );
+}
+
+/**
+ * A right-pointing wedge — play a voice message.
+ *
+ * The second exception to "everything is rectangles": a triangle is the one
+ * shape they cannot make. Borders can — a zero-sized box whose left border is
+ * coloured and whose top and bottom borders are transparent renders as a
+ * wedge, which needs no SVG and no glyph.
+ *
+ * Deliberately PHYSICAL (`borderLeft`, not `borderStart`) and nudged with a
+ * transform rather than a logical margin: play points the same way in every
+ * language, exactly as it does on every physical device with a play button.
+ */
+export function PlayIcon({ color, size = 20 }: IconProps): React.JSX.Element {
+  const width = size * 0.3;
+  const half = size * 0.2;
+  return (
+    <IconBox size={size}>
+      <View
+        style={{
+          width: 0,
+          height: 0,
+          borderTopWidth: half,
+          borderBottomWidth: half,
+          borderLeftWidth: width,
+          borderTopColor: 'transparent',
+          borderBottomColor: 'transparent',
+          borderLeftColor: color,
+          // The wedge's visual mass sits left of its bounding box.
+          transform: [{ translateX: width * 0.25 }],
+        }}
+      />
+    </IconBox>
+  );
+}
+
+/** Two upright bars — pause a voice message. */
+export function PauseIcon({ color, size = 20 }: IconProps): React.JSX.Element {
+  const width = size * 0.14;
+  const height = size * 0.5;
+  const gap = size * 0.13;
+  return (
+    <IconBox size={size}>
+      <Bar color={color} width={width} height={height} translateX={-gap} radius={1} />
+      <Bar color={color} width={width} height={height} translateX={gap} radius={1} />
     </IconBox>
   );
 }
@@ -339,6 +402,35 @@ export function ChatBubbleIcon({ color, size = 26 }: IconProps): React.JSX.Eleme
           backgroundColor: color,
           borderBottomLeftRadius: s * 0.06,
           transform: [{ translateX: -s * 0.22 }, { translateY: s * 0.3 }, { rotate: '20deg' }],
+        }}
+      />
+    </IconBox>
+  );
+}
+
+/** A bin — throw the recording away. */
+export function TrashIcon({ color, size = 22 }: IconProps): React.JSX.Element {
+  const body = size * 0.5;
+  const w = size * 0.46;
+  return (
+    <IconBox size={size}>
+      {/* lid */}
+      <Bar color={color} width={w} height={size * 0.09} translateY={-size * 0.26} radius={1} />
+      {/* handle */}
+      <Bar color={color} width={w * 0.4} height={size * 0.07} translateY={-size * 0.36} radius={1} />
+      {/* the can, drawn as an outline so it does not read as a solid block */}
+      <View
+        style={{
+          position: 'absolute',
+          width: w * 0.78,
+          height: body,
+          transform: [{ translateY: size * 0.09 }],
+          borderWidth: size * 0.075,
+          borderColor: color,
+          borderTopLeftRadius: 1,
+          borderTopRightRadius: 1,
+          borderBottomLeftRadius: size * 0.08,
+          borderBottomRightRadius: size * 0.08,
         }}
       />
     </IconBox>

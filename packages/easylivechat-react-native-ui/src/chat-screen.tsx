@@ -16,8 +16,6 @@ import {
   ActivityIndicator,
   AppState,
   type AppStateStatus,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   SafeAreaView,
   StyleSheet,
@@ -248,11 +246,20 @@ export function EasyLiveChatScreen(props: EasyLiveChatScreenProps): React.JSX.El
 
   return (
     <DirectionProvider value={theme.direction}>
+      {/*
+        No `KeyboardAvoidingView`. It was inert on Android — `behavior` was
+        undefined there, which is RN's `default:` branch, a plain `View` that
+        never applies the inset it computed — and on iOS it derived the overlap
+        from a parent-relative layout rect against a screen-absolute keyboard
+        rect, so it was only right when this screen happened to start at window
+        Y 0. Under a host's safe-area inset, a navigation header or a page
+        sheet it was short by exactly that offset and buried the composer.
+
+        The composer measures and pays its own overlap now, which is correct
+        wherever it is mounted and cannot double-avoid. See `ComposerBar`.
+      */}
       <SafeAreaView style={[styles.root, { backgroundColor: theme.background }]}>
-        <KeyboardAvoidingView
-          style={styles.root}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        >
+        <>
           {showAppBar ? (
             <ChatAppBar
               theme={theme}
@@ -276,7 +283,7 @@ export function EasyLiveChatScreen(props: EasyLiveChatScreenProps): React.JSX.El
               onRequestClose={onRequestClose}
             />
           </View>
-        </KeyboardAvoidingView>
+        </>
       </SafeAreaView>
     </DirectionProvider>
   );

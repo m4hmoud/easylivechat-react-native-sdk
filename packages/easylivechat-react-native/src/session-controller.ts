@@ -1421,8 +1421,50 @@ export class SessionController {
     this.setMessages(dedupSort([...this.messages.get(), msg]));
   }
 
+  /**
+   * Fold a fetched page into the thread.
+   *
+   * Deduplicating by id alone is not enough for the visitor's OWN messages.
+   * `message:new` is live-only, so a send whose echo arrived while the socket
+   * was down is recovered here, from REST, as a brand-new row — and the
+   * optimistic `tmp-` row it belongs to is invisible to an id comparison,
+   * because it does not have the server's id yet. The thread then shows the
+   * message twice and one copy sits on the clock for ever: the agent has it,
+   * the visitor is told it never sent.
+   *
+   * Nothing else clears it. The 20s ack timer is a JS `setTimeout`, which does
+   * not run while the app is suspended — which is exactly when a socket drops
+   * — and when it does fire it turns the duplicate into a FAILED bubble with a
+   * retry link rather than a sent one.
+   *
+   * So a server row for one of our own sends consumes the pending row instead
+   * of sitting beside it, by the same rule `handleMessageNew` uses for a live
+   * echo: first pending `tmp-` row from the visitor with the same trimmed
+   * body. Consuming it keeps the FIFO property — a second identical send
+   * matches the NEXT pending row, not this one again.
+   *
+   * `backfillAfterReconnect` deliberately leaves optimistic rows out of the
+   * overlap set it walks (they have no server id to compare), so this is the
+   * only place they can be reconciled.
+   */
   private mergeMessages(incoming: readonly ChatMessage[]): void {
-    this.setMessages(dedupSort([...this.messages.get(), ...incoming]));
+    const list = [...this.messages.get()];
+
+    for (const msg of incoming) {
+      if (isFromCustomer(msg) && !list.some((m) => m.id === msg.id)) {
+        const body = (msg.body ?? '').trim();
+        const optIdx = list.findIndex(
+          (m) => isLocalTemp(m) && isFromCustomer(m) && (m.body ?? '').trim() === body,
+        );
+        if (optIdx !== -1) {
+          list[optIdx] = msg;
+          continue;
+        }
+      }
+      list.push(msg);
+    }
+
+    this.setMessages(dedupSort(list));
   }
 
   /** Move the read watermark FORWARD, never back. See {@link agentLastReadAt}. */
