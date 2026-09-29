@@ -12,7 +12,7 @@ import {
 
 import { ElcChime } from './chime';
 import { EasyLiveChatScreen } from './chat-screen';
-import type { Direction } from './direction';
+import { type Direction, insetEnd } from './direction';
 import { ChatBubbleIcon } from './icons';
 import { stringsFor } from './l10n';
 import type { ElcAttachmentPicker } from './picked-file';
@@ -160,11 +160,9 @@ export function EasyLiveChatLauncher({
             style={[
               styles.badge,
               { borderColor: theme.background },
-              // Mirrors with the workspace. `start`/`end` cannot be used here:
-              // they resolve through `I18nManager.isRTL`, which the SDK
-              // deliberately never sets (it is process-global and would flip
-              // the host app), so the side is chosen explicitly.
-              theme.direction === 'rtl' ? { left: -2 } : { right: -2 },
+              // Mirrors with the workspace. Neither `start`/`end` nor a bare
+              // `left`/`right` is right here — see `insetEnd`.
+              insetEnd(theme.direction, -2),
             ]}
             pointerEvents="none"
             accessible

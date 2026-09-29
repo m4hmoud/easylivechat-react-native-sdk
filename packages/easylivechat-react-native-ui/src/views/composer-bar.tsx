@@ -421,7 +421,7 @@ export function ComposerBar({
         <View style={styles.field}>
           {recording ? (
             <RecordingBar
-              seconds={recorder.seconds}
+              takeMs={recorder.takeMs}
               levels={recorder.levels}
               paused={recorder.paused}
               previewUri={recorder.previewUri}
@@ -650,6 +650,23 @@ export function formatRecordDuration(seconds: number): string {
 }
 
 /**
+ * How long a take actually is: the runs already banked, plus the live one.
+ *
+ * MEASURED off the clock rather than counted by a timer. A `setInterval`
+ * adding one per tick drifts late under load, and — the part that was
+ * visible — it kept counting while the take was PAUSED, so the readout
+ * climbed for audio that was never recorded and drifted further from the
+ * waveform the longer you sat reviewing it.
+ *
+ * `runStartedAt` is 0 when the microphone is shut, which is what makes a
+ * paused take stand still.
+ */
+export function takeLength(banked: number, runStartedAt: number, now: number): number {
+  const live = runStartedAt > 0 ? Math.max(0, now - runStartedAt) : 0;
+  return Math.min(banked + live, MAX_RECORD_SECONDS * 1000);
+}
+
+/**
  * The take, while it is being made and once it is made.
  *
  * Recording: a live waveform off the microphone, running time, and a pause.
@@ -658,7 +675,7 @@ export function formatRecordDuration(seconds: number): string {
  * because neither recording format has a container index to finalise.
  */
 function RecordingBar({
-  seconds,
+  takeMs,
   levels,
   paused,
   previewUri,
@@ -667,7 +684,8 @@ function RecordingBar({
   dir,
   onPause,
 }: {
-  seconds: number;
+  /** The take's measured length, in ms — the timeline for both readouts. */
+  takeMs: number;
   levels: number[];
   paused: boolean;
   previewUri: () => string | null;
@@ -676,12 +694,13 @@ function RecordingBar({
   dir: DirectionStyles;
   onPause: () => void;
 }): React.JSX.Element {
-  const preview = usePreviewPlayer(previewUri, paused);
+  const takeSeconds = takeMs / 1000;
+  const preview = usePreviewPlayer(previewUri, paused, takeSeconds);
   const fraction = paused ? preview.fraction : 1;
   const elapsed =
     paused && preview.position > 0
       ? formatRecordDuration(Math.floor(preview.position))
-      : formatRecordDuration(seconds);
+      : formatRecordDuration(Math.floor(takeSeconds));
 
   return (
     <View style={{ flexDirection: dir.row, alignItems: 'center' }}>
@@ -749,13 +768,37 @@ function RecordingBar({
  * The recorder keeps the file open while paused; both formats are readable
  * mid-write, so the uri can simply be handed to a player. Recreated whenever
  * the take grows, because the old player is holding a shorter file.
+ *
+ * `takeSeconds` IS the timeline, and the player's own `duration` is not.
+ *
+ * Both recording formats are containerless on purpose (see `recordingOptions`)
+ * — which is exactly why neither can state its length while it is being
+ * written. A WAV's data-chunk length is a placeholder until `stop()` patches
+ * it, and ADTS has no duration field at all, so a player opening the take
+ * mid-record reports 0, or a guess off the bytes that happened to be there.
+ * Scaling the playhead by that put the dimming line nowhere near the audio.
+ *
+ * The recorder, meanwhile, knows precisely how long the microphone was open.
+ * That measurement is the authority here; the player is asked only for
+ * `currentTime`, which is a sample count and is reliable.
  */
-function usePreviewPlayer(previewUri: () => string | null, paused: boolean) {
+function usePreviewPlayer(
+  previewUri: () => string | null,
+  paused: boolean,
+  takeSeconds: number,
+) {
   const player = useRef<PreviewPlayerish | null>(null);
   const ticker = useRef<ReturnType<typeof setInterval> | null>(null);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
-  const [total, setTotal] = useState(0);
+  const [reported, setReported] = useState(0);
+
+  /** The measured take, falling back to the file's claim only if we have none. */
+  const total = takeSeconds > 0 ? takeSeconds : reported;
+  // The polling loop outlives the render that made it, so it reads the length
+  // through a ref rather than closing over a value that is about to be stale.
+  const totalRef = useRef(total);
+  totalRef.current = total;
 
   const stop = useCallback(() => {
     if (ticker.current != null) {
@@ -770,7 +813,7 @@ function usePreviewPlayer(previewUri: () => string | null, paused: boolean) {
     player.current = null;
     setPlaying(false);
     setPosition(0);
-    setTotal(0);
+    setReported(0);
   }, []);
 
   // Leaving the paused state means the take is about to grow: whatever was
@@ -803,11 +846,17 @@ function usePreviewPlayer(previewUri: () => string | null, paused: boolean) {
       ticker.current = setInterval(() => {
         const p = player.current;
         if (p == null) return;
-        const d = typeof p.duration === 'number' && Number.isFinite(p.duration) ? p.duration : 0;
+        const claimed =
+          typeof p.duration === 'number' && Number.isFinite(p.duration) ? p.duration : 0;
         const t =
           typeof p.currentTime === 'number' && Number.isFinite(p.currentTime) ? p.currentTime : 0;
-        if (d > 0) setTotal(d);
+        // Kept only as the fallback for a take we somehow failed to measure.
+        if (claimed > 0) setReported(claimed);
         setPosition(t);
+        // Ended against the MEASURED length: a containerless file cannot be
+        // trusted to say when it runs out, and one that claims zero would
+        // never stop at all.
+        const d = totalRef.current;
         if (d > 0 && t >= d - 0.25) {
           try {
             p.pause();
@@ -844,7 +893,20 @@ function usePreviewPlayer(previewUri: () => string | null, paused: boolean) {
   return {
     playing,
     position,
-    fraction: total > 0 ? Math.min(1, Math.max(0, position / total)) : 0,
+    /**
+     * How much of the take is behind the playhead, 0..1.
+     *
+     * A take sitting at the start is FULLY lit, not fully dimmed. `fraction`
+     * drives the dimming in `VoiceLevels`, so returning 0 at rest greyed out
+     * every bar of a perfectly good recording the moment you paused, and it
+     * only came back by playing it through to the end.
+     */
+    fraction:
+      !playing && position <= 0
+        ? 1
+        : total > 0
+          ? Math.min(1, Math.max(0, position / total))
+          : 1,
     toggle,
     seek,
   };
@@ -866,6 +928,16 @@ interface RecorderApi {
   /** Microphone off, take kept. `resume()` appends to the SAME file. */
   paused: boolean;
   seconds: number;
+  /**
+   * How long the microphone has actually been open, in ms.
+   *
+   * MEASURED, not counted. {@link seconds} used to be a `setInterval` adding
+   * one per tick, which drifts late under load and — worse — kept counting
+   * while the take was PAUSED, so the readout climbed for audio that was
+   * never recorded. This is the difference of two clock readings across the
+   * runs the microphone was live for, so it is right whatever the timers did.
+   */
+  takeMs: number;
   /** Real input levels, newest last, for the waveform. */
   levels: number[];
   start(): Promise<void>;
@@ -942,11 +1014,20 @@ function useRecorder({
 }): RecorderApi {
   const [recording, setRecording] = useState(false);
   const [paused, setPaused] = useState(false);
-  const [seconds, setSeconds] = useState(0);
+  const [takeMs, setTakeMs] = useState(0);
   const [levels, setLevels] = useState<number[]>([]);
   const recorderRef = useRef<AudioRecorderish | null>(null);
   const ticker = useRef<ReturnType<typeof setInterval> | null>(null);
   const meter = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** Time banked from runs of the microphone that have already ended. */
+  const banked = useRef(0);
+  /** When the CURRENT run started, or 0 when the microphone is not open. */
+  const runStartedAt = useRef(0);
+
+  const seconds = Math.floor(takeMs / 1000);
+
+  /** The measured take: everything banked, plus the run in progress. */
+  const measure = useCallback(() => takeLength(banked.current, runStartedAt.current, Date.now()), []);
 
   const stopMeter = useCallback(() => {
     if (meter.current != null) {
@@ -989,6 +1070,29 @@ function useRecorder({
     }
   }, []);
 
+  /**
+   * Open a run and publish the measured length four times a second.
+   *
+   * Faster than the one-second tick it replaces because this now drives the
+   * playback timeline as well as the `m:ss` readout, and because a whole
+   * second of latency on the last digit is visible. It carries no arithmetic
+   * of its own: every value is read off the clock.
+   */
+  const startTicker = useCallback(() => {
+    stopTicker();
+    runStartedAt.current = Date.now();
+    setTakeMs(measure());
+    ticker.current = setInterval(() => setTakeMs(measure()), 250);
+  }, [stopTicker, measure]);
+
+  /** Close the current run, keeping what it contributed. */
+  const bankRun = useCallback(() => {
+    stopTicker();
+    banked.current = measure();
+    runStartedAt.current = 0;
+    setTakeMs(banked.current);
+  }, [stopTicker, measure]);
+
   const release = useCallback(() => {
     stopTicker();
     stopMeter();
@@ -1001,7 +1105,33 @@ function useRecorder({
     }
     recorderRef.current = null;
     setRecording(false);
-    setSeconds(0);
+    banked.current = 0;
+    runStartedAt.current = 0;
+    setTakeMs(0);
+
+    /**
+     * Hand the audio session back.
+     *
+     * Recording asks for `allowsRecording: true`, which on iOS means the
+     * AVAudioSession category `PlayAndRecord` — and that category routes
+     * output to the RECEIVER, not the speaker. Nothing put it back, so from
+     * the first take onwards every voice note played through the earpiece at
+     * a whisper: audible with the phone against your head, silent on a desk,
+     * and indistinguishable from "playback is broken".
+     *
+     * Only the flag WE set is cleared. The session belongs to the host app —
+     * this one is also running Agora calls — so the SDK undoes its own change
+     * and asserts nothing else.
+     */
+    void (async () => {
+      try {
+        const audio = await loadExpoAudio();
+        await audio?.setAudioModeAsync?.({ allowsRecording: false });
+      } catch {
+        // Best effort: a session we cannot hand back is not something the
+        // visitor can act on, and the recording itself is already safe.
+      }
+    })();
   }, [stopTicker, stopMeter]);
 
   useEffect(() => () => release(), [release]);
@@ -1037,18 +1167,15 @@ function useRecorder({
       recorderRef.current = rec;
       setRecording(true);
       setPaused(false);
-      setSeconds(0);
       setLevels([]);
+      banked.current = 0;
       startMeter();
-      stopTicker();
-      ticker.current = setInterval(() => {
-        setSeconds((s) => Math.min(s + 1, MAX_RECORD_SECONDS));
-      }, 1000);
+      startTicker();
     } catch {
       onError(strings.t('micFailed'));
       release();
     }
-  }, [recording, onError, strings, stopTicker, release]);
+  }, [recording, onError, strings, startMeter, startTicker, release]);
 
   const cancel = useCallback(async () => {
     try {
@@ -1063,13 +1190,17 @@ function useRecorder({
   const pause = useCallback(async () => {
     if (!recording || paused) return;
     stopMeter();
+    // The clock stops with the microphone. It used to be left running, so a
+    // take paused for review kept accruing seconds it had not recorded, and
+    // the readout drifted further from the audio the longer you listened.
+    bankRun();
     try {
       recorderRef.current?.pause();
     } catch {
       // A recorder that will not pause is one we can still stop to send.
     }
     setPaused(true);
-  }, [recording, paused, stopMeter]);
+  }, [recording, paused, stopMeter, bankRun]);
 
   const resume = useCallback(async () => {
     const rec = recorderRef.current;
@@ -1082,7 +1213,9 @@ function useRecorder({
     }
     setPaused(false);
     startMeter();
-  }, [paused, onError, strings, startMeter]);
+    // A new run on top of what is already banked.
+    startTicker();
+  }, [paused, onError, strings, startMeter, startTicker]);
 
   /**
    * The take so far, playable, WITHOUT ending it.
@@ -1114,11 +1247,28 @@ function useRecorder({
     return { data: { uri }, filename: name, contentType: takeContentType() };
   }, [release, stopTicker]);
 
+  /**
+   * EVERY field is a dependency, and leaving one out is not an optimisation.
+   *
+   * `levels` and `paused` were missing. A memo that omits a value it returns
+   * does not merely go stale — it PINS that value until one of the listed
+   * deps happens to change. Metering pushes a sample every
+   * `LEVEL_INTERVAL_MS` (17 a second), but the only dep that moved during a
+   * take was the one-second clock, so the waveform sat frozen for a second
+   * and then a second's worth of bars arrived at once. That was the recording
+   * bar's "jump", and no amount of smoothing inside `VoiceLevels` could have
+   * reached it: the samples were never handed over in the first place.
+   *
+   * `paused` was pinned the same way, which is why tapping pause took up to a
+   * second to show the review UI, and why the `pause`/`resume` callbacks
+   * handed out were closed over a state that had already moved on.
+   */
   return useMemo(
     () => ({
       recording,
       paused,
       seconds,
+      takeMs,
       levels,
       start,
       pause,
@@ -1127,7 +1277,19 @@ function useRecorder({
       previewUri,
       stopAndTake,
     }),
-    [recording, seconds, start, cancel, stopAndTake],
+    [
+      recording,
+      paused,
+      seconds,
+      takeMs,
+      levels,
+      start,
+      pause,
+      resume,
+      cancel,
+      previewUri,
+      stopAndTake,
+    ],
   );
 }
 

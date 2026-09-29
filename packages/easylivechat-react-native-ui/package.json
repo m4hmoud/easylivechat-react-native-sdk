@@ -1,6 +1,6 @@
 {
   "name": "@easylivechat/react-native-ui",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Prebuilt, themeable React Native chat UI for EasyLiveChat live customer support: launcher bubble, chat screen, pre-chat form, attachments and CSAT, driven by your widget config.",
   "license": "MIT",
   "homepage": "https://livechattools.com",
@@ -46,7 +46,7 @@
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
-    "@easylivechat/react-native": "^0.1.1"
+    "@easylivechat/react-native": "^0.1.2"
   },
   "peerDependencies": {
     "@react-native-async-storage/async-storage": ">=1.23.0",

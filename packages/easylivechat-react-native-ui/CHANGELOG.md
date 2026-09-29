@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-09-29
+
+### Fixed
+
+- The recording waveform advanced in one-second lurches instead of scrolling.
+  `useRecorder` returned its API through a `useMemo` whose dependency list left
+  out `levels` and `paused`. A memo that omits a value it returns does not go
+  stale so much as PIN that value, so although metering pushed a sample every
+  60ms, the only listed dependency that moved during a take was the
+  one-second clock — the waveform sat frozen for a second and then seventeen
+  bars arrived at once. Nothing inside the waveform could have smoothed this:
+  the samples were never handed to it. `paused` was pinned the same way, which
+  is why tapping pause took up to a second to show the review UI and why the
+  `pause`/`resume` callbacks were closed over a state that had already moved.
+- The elapsed time did not match the waveform during playback, and drifted
+  further the longer a take was reviewed. Two causes. The `m:ss` readout was a
+  `setInterval` adding one per tick, and nothing stopped it when the microphone
+  stopped — a paused take kept accruing seconds of audio it had not recorded.
+  And the playhead was scaled by the player's reported `duration`, which these
+  formats cannot supply mid-write: a WAV's data-chunk length is a placeholder
+  until `stop()` patches it and ADTS carries no duration field at all, so the
+  figure was zero or a guess off whatever bytes were on disk when the file was
+  opened. The take is now measured off the clock across the runs the
+  microphone was actually open, and that measurement is the timeline for both
+  readouts; the player is asked only for `currentTime`, which is a sample
+  count and is reliable.
+- A paused take was drawn entirely dimmed until it had been played through to
+  the end. The playhead fraction was 0 at rest, and that fraction is what dims
+  the bars, so a perfectly good recording greyed out the moment you paused it.
+- The waveform stuttered in Arabic and Kurdish while scrolling cleanly in
+  English. The RTL branch wrapped the animated value in `Animated.multiply`,
+  building a new animated node on every render — seventeen times a second,
+  each one created and attached natively while the last was detached, so the
+  transform was rebuilt out from under the running animation continuously. The
+  sign lives on the value now and the transform is the same node in both
+  directions. Each step also carries over whatever travel the previous one had
+  not finished rather than discarding it, so a sample arriving early no longer
+  jumps the run backwards.
+
 ## [0.1.4] - 2026-09-28
 
 ### Fixed

@@ -8,6 +8,13 @@ import { MAX_FONT_SCALE } from '../text-scaling';
 import { withAlpha } from '../theme';
 
 /**
+ * How many 200ms ticks to wait for playback to actually begin before giving
+ * the button back — three seconds, which is longer than any local file takes
+ * and short enough that a dead note does not sit there showing a pause icon.
+ */
+const START_TICKS = 15;
+
+/**
  * A voice message you can listen to, with its length and a seek bar.
  *
  * ## Why the file is downloaded before it is played
@@ -72,6 +79,11 @@ export function VoiceNoteTile({
   const [total, setTotal] = useState<number | null>(null);
   /** Set while a finger is on the bar, so the thumb follows the drag. */
   const [dragFraction, setDragFraction] = useState<number | null>(null);
+
+  /** Whether this player has been observed playing since the last press. */
+  const started = useRef(false);
+  /** Ticks spent waiting for it to start, so a dead note cannot hang the UI. */
+  const waited = useRef(0);
 
   const stopTicker = useCallback(() => {
     if (ticker.current != null) {
@@ -175,6 +187,14 @@ export function VoiceNoteTile({
    */
   const startTicker = useCallback(() => {
     stopTicker();
+    // `play()` returns before the player is actually playing: expo-audio
+    // finishes loading on its own thread. The tick below used to read
+    // `playing === false` 200ms later, conclude the note had ended and stop
+    // everything — so pressing play flipped the button straight back and the
+    // note never moved. Nothing is believed to have STOPPED until it has been
+    // seen to START.
+    started.current = false;
+    waited.current = 0;
     ticker.current = setInterval(() => {
       const player = playerRef.current;
       if (player == null || !mounted.current) return;
@@ -196,7 +216,14 @@ export function VoiceNoteTile({
         setPlaying(false);
         return;
       }
-      if (player.playing === false) {
+      if (player.playing === true) {
+        started.current = true;
+      } else if (started.current) {
+        stopTicker();
+        setPlaying(false);
+      } else if (++waited.current >= START_TICKS) {
+        // It never started. Give the button back rather than leaving it
+        // showing a pause icon over silence.
         stopTicker();
         setPlaying(false);
       }
@@ -254,7 +281,9 @@ export function VoiceNoteTile({
     const width = barWidth.current;
     if (width <= 0) return 0;
     // locationX is physical; the bars run the other way in RTL.
-    return clamp((dir.row === 'row-reverse' ? width - x : x) / width, 0, 1);
+    // Physical coordinate: ask the chat's own direction, not `dir.row`,
+    // which is expressed relative to the host's.
+    return clamp((dir.isRtl ? width - x : x) / width, 0, 1);
   };
 
   return (

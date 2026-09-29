@@ -8,7 +8,7 @@ import {
   View,
 } from 'react-native';
 
-import { DirectionProvider } from '../direction';
+import { DirectionProvider, insetEnd } from '../direction';
 import { CloseIcon } from '../icons';
 import type { Strings } from '../l10n';
 import type { EasyLiveChatTheme } from '../theme';
@@ -74,10 +74,7 @@ export function ElcImageViewer({
             onPress={onClose}
             accessibilityRole="button"
             accessibilityLabel={strings.t('close')}
-            style={[
-              styles.close,
-              theme.direction === 'rtl' ? { left: 16 } : { right: 16 },
-            ]}
+            style={[styles.close, insetEnd(theme.direction, 16)]}
             hitSlop={12}
           >
             <CloseIcon color="#FFFFFF" size={22} />

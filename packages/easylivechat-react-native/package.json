@@ -1,6 +1,6 @@
 {
   "name": "@easylivechat/react-native",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Headless React Native client for EasyLiveChat real-time customer support: sessions, messages, attachments, typing, presence and pre/post-chat forms over HTTP and Socket.IO. No UI.",
   "license": "MIT",
   "homepage": "https://livechattools.com",

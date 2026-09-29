@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useMemo } from 'react';
-import type { FlexStyle, TextStyle } from 'react-native';
+import { I18nManager, type FlexStyle, type TextStyle, type ViewStyle } from 'react-native';
 
 export type Direction = 'ltr' | 'rtl';
 
@@ -14,6 +14,9 @@ export type Direction = 'ltr' | 'rtl';
  * `writingDirection`.
  *
  * The chat can be RTL inside an LTR host app, and must be.
+ *
+ * It can also be RTL inside an app that is ALREADY RTL, and that is the case
+ * this got wrong. See `directionStyles`.
  */
 const DirectionContext = createContext<Direction>('ltr');
 
@@ -56,21 +59,75 @@ export function useDirectionStyles(): DirectionStyles {
   return useMemo(() => directionStyles(direction), [direction]);
 }
 
-export function directionStyles(direction: Direction): DirectionStyles {
+/**
+ * Logical styles for `direction`, expressed against the direction the layout
+ * engine is ALREADY applying.
+ *
+ * `hostRtl` is the host app's `I18nManager.isRTL`. It matters because React
+ * Native mirrors layout itself when that flag is set: `flexDirection: 'row'`
+ * lays out right-to-left, `flex-start` means the right edge, and `textAlign:
+ * 'left'` resolves to the right edge on both platforms. Those are not physical
+ * values; they are already logical.
+ *
+ * So this used to double-flip. Written for an LTR host, it returned
+ * `row-reverse` for an RTL chat — correct there, and exactly wrong inside a
+ * host that had called `forceRTL(true)`, where the engine's own mirroring then
+ * cancelled it and the chat came out left-to-right. The Zirak captain app hit
+ * this the moment it switched to Kurdish: an LTR app bar and composer, with
+ * the arrows pointing the other way because TRANSFORMS are not mirrored and so
+ * were the only things still honouring the SDK's intent.
+ *
+ * The rule is a comparison, not a constant: when our direction AGREES with the
+ * host's, the plain logical value is already right and must be left alone;
+ * only when they disagree is anything reversed. An LTR host with an RTL chat
+ * disagrees — which is why the old code looked correct for as long as that was
+ * the only case anyone tried.
+ *
+ * `mirror` is the exception and stays absolute. It is a `scaleX` transform,
+ * and React Native does not mirror transforms, so a directional glyph has to
+ * be flipped by us whenever the chat is RTL whatever the host is doing.
+ */
+export function directionStyles(
+  direction: Direction,
+  hostRtl: boolean = I18nManager.isRTL,
+): DirectionStyles {
   const isRtl = direction === 'rtl';
+  const agrees = isRtl === hostRtl;
   return {
     direction,
     isRtl,
-    row: isRtl ? 'row-reverse' : 'row',
-    rowReverse: isRtl ? 'row' : 'row-reverse',
-    alignStart: isRtl ? 'flex-end' : 'flex-start',
-    alignEnd: isRtl ? 'flex-start' : 'flex-end',
+    row: agrees ? 'row' : 'row-reverse',
+    rowReverse: agrees ? 'row-reverse' : 'row',
+    alignStart: agrees ? 'flex-start' : 'flex-end',
+    alignEnd: agrees ? 'flex-end' : 'flex-start',
     // `writingDirection` alongside `textAlign` so a mixed-script line lays its
-    // own neutrals out correctly, not just its block edge.
-    textStart: { textAlign: isRtl ? 'right' : 'left', writingDirection: direction },
-    textEnd: { textAlign: isRtl ? 'left' : 'right', writingDirection: direction },
+    // own neutrals out correctly, not just its block edge. It names the
+    // absolute direction, because it is about the text's own bidi base and not
+    // about which edge the block sits against.
+    textStart: { textAlign: agrees ? 'left' : 'right', writingDirection: direction },
+    textEnd: { textAlign: agrees ? 'right' : 'left', writingDirection: direction },
     mirror: { transform: [{ scaleX: isRtl ? -1 : 1 }] },
   };
+}
+
+/**
+ * An absolutely-positioned inset pinned to the TRAILING edge of `direction`.
+ *
+ * `start`/`end` cannot be used: they resolve through `I18nManager.isRTL`, the
+ * host's flag, and the chat's direction is its own. But `left`/`right` are not
+ * physical either — React Native swaps them whenever the host is RTL — so
+ * naming a side directly was only right while the host was LTR. Both flips are
+ * accounted for here: pick the side we want to see, then write whichever
+ * property the engine will resolve to it.
+ */
+export function insetEnd(
+  direction: Direction,
+  inset: number,
+  hostRtl: boolean = I18nManager.isRTL,
+): ViewStyle {
+  const wanted: 'left' | 'right' = direction === 'rtl' ? 'left' : 'right';
+  const property = hostRtl ? (wanted === 'left' ? 'right' : 'left') : wanted;
+  return { [property]: inset };
 }
 
 /**

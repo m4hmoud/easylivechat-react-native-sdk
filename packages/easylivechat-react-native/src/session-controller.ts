@@ -179,6 +179,18 @@ export class SessionController {
   private profile: StoredProfile | null = null;
 
   /**
+   * True when {@link boot} MINTED this visitor id rather than reading one back.
+   *
+   * A resume is keyed on the visitor id server-side, so an id that did not
+   * exist a moment ago cannot have a conversation behind it: the probe is a
+   * guaranteed-empty round trip, and it sat in front of the first paint. Set
+   * only by `boot`, and cleared by {@link adoptSession} the instant a session
+   * exists under this id — otherwise reopening the chat would skip the resume
+   * that is now the whole point and start a second conversation.
+   */
+  private freshVisitor = false;
+
+  /**
    * Host-supplied identity for a known (logged-in) visitor. When set,
    * {@link open} skips the pre-chat form and starts directly as this person.
    */
@@ -353,6 +365,7 @@ export class SessionController {
     if (vid == null || vid.trim().length === 0) {
       vid = uuidV4();
       await this.storage.write(StorageKeys.visitorId, vid);
+      this.freshVisitor = true;
     }
     this.visitorIdValue = vid;
 
@@ -441,9 +454,25 @@ export class SessionController {
    * session reused the config captured at startup: `isOpen` was frozen at
    * whatever it was then, and no amount of server-side correctness could reach
    * the UI.
+   *
+   * The config and the resume run CONCURRENTLY. They were serial, so every
+   * open cost two full round trips back to back before anything could be
+   * drawn, and nothing warmed either of them — `boot` is deliberately
+   * offline. They are independent: the only thing the resume reads from the
+   * config is {@link idlePhase}, and `open` sets the final phase itself
+   * afterwards regardless. On a genuine first open the resume is skipped
+   * outright (see {@link freshVisitor}), which takes the tap down to one.
    */
   async open(): Promise<void> {
-    const cfg = await this.loadConfig();
+    // Both started BEFORE either is awaited, so the requests overlap. Config
+    // goes first so it is the one that sets `loading`, and because it is the
+    // one the first paint is actually waiting on. `silentResume` resolves
+    // rather than rejects on failure, so the pending probe cannot surface as
+    // an unhandled rejection if the config load throws first.
+    const loading = this.loadConfig();
+    const resuming = this.freshVisitor ? Promise.resolve(false) : this.silentResume();
+
+    const cfg = await loading;
 
     // The receive-only presence socket, for pre-chat proactive outreach.
     if (this.config.enablePresenceSocket) this.connectPresence();
@@ -455,12 +484,13 @@ export class SessionController {
       // hiding it behind a notice loses them their own history. Sending stays
       // blocked either way: the composer is locked, and the server refuses the
       // write regardless of what the client renders.
-      const resumedWhileLocked = await this.silentResume();
+      // Joins the probe already in flight — `silentResume` is single-flight.
+      const resumedWhileLocked = await resuming;
       if (!resumedWhileLocked) this.setPhase('offline');
       return;
     }
 
-    const resumed = await this.silentResume();
+    const resumed = await resuming;
     if (resumed) return;
 
     if (this.hasIdentity) {
@@ -652,6 +682,9 @@ export class SessionController {
    * seed the messages, connect the `/widgets` socket, move to `chat`.
    */
   private async adoptSession(res: SessionResult): Promise<void> {
+    // There is a conversation under this visitor id now, so the next open has
+    // something real to resume.
+    this.freshVisitor = false;
     this.token = res.token ?? null;
     this.conversationIdValue = res.conversationId ?? null;
     this.oldestCursor = res.nextCursor ?? null;

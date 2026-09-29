@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-29
+
+### Changed
+
+- `open()` no longer costs three serial round trips before anything can be
+  drawn. `boot()` is deliberately offline, so every request the first open
+  needs is one the visitor waits through after tapping — and the first of them
+  could not return anything. The resume probe is keyed on the visitor id, and
+  on a genuine first open `boot()` minted that id moments earlier, so there was
+  nothing on the server to find. It is now skipped whenever the id is freshly
+  minted, and the flag is cleared as soon as a session exists under it so a
+  reopen still resumes. The config load and the resume probe also run
+  concurrently rather than one after the other: they are independent, and
+  `open()` sets the final phase itself in either case. A first open pays one
+  round trip where it used to pay three.
+
 ## [0.1.1] - 2026-09-28
 
 ### Fixed
