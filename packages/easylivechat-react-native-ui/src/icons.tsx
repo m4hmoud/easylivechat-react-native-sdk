@@ -637,3 +637,85 @@ export function CaretDownIcon({ color, size = 12 }: IconProps): React.JSX.Elemen
     </IconBox>
   );
 }
+
+/**
+ * A forward chevron — points at the TRAILING edge of an LTR layout. Wrap it in
+ * `useDirectionStyles().mirror` so it points the reading direction in RTL.
+ */
+export function ChevronIcon({ color, size = 14 }: IconProps): React.JSX.Element {
+  const s = size;
+  const thickness = Math.max(1.5, s * 0.14);
+  return (
+    <IconBox size={s}>
+      <Bar
+        color={color}
+        width={s * 0.62}
+        height={thickness}
+        rotate={45}
+        translateX={-s * 0.08}
+        translateY={-s * 0.19}
+      />
+      <Bar
+        color={color}
+        width={s * 0.62}
+        height={thickness}
+        rotate={-45}
+        translateX={-s * 0.08}
+        translateY={s * 0.19}
+      />
+    </IconBox>
+  );
+}
+
+/** A magnifier — the help search field. Not mirrored: it is not directional. */
+export function SearchIcon({ color, size = 18 }: IconProps): React.JSX.Element {
+  const s = size;
+  const thickness = Math.max(1.5, s * 0.11);
+  const ring = s * 0.62;
+  return (
+    <IconBox size={s}>
+      <View
+        style={{
+          position: 'absolute',
+          width: ring,
+          height: ring,
+          borderRadius: ring / 2,
+          borderWidth: thickness,
+          borderColor: color,
+          transform: [{ translateX: -s * 0.08 }, { translateY: -s * 0.08 }],
+        }}
+      />
+      <Bar
+        color={color}
+        width={s * 0.34}
+        height={thickness}
+        rotate={45}
+        translateX={s * 0.26}
+        translateY={s * 0.26}
+      />
+    </IconBox>
+  );
+}
+
+/** A page with lines on it — a help article. */
+export function ArticleIcon({ color, size = 20 }: IconProps): React.JSX.Element {
+  const s = size;
+  const thickness = Math.max(1.5, s * 0.08);
+  return (
+    <IconBox size={s}>
+      <View
+        style={{
+          position: 'absolute',
+          width: s * 0.72,
+          height: s * 0.88,
+          borderRadius: s * 0.12,
+          borderWidth: thickness,
+          borderColor: color,
+        }}
+      />
+      <Bar color={color} width={s * 0.38} height={thickness} translateY={-s * 0.17} />
+      <Bar color={color} width={s * 0.38} height={thickness} />
+      <Bar color={color} width={s * 0.38} height={thickness} translateY={s * 0.17} />
+    </IconBox>
+  );
+}

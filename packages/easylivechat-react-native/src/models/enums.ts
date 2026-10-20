@@ -123,9 +123,9 @@ export type LocaleDirection = 'ltr' | 'rtl';
 export const parseLocaleDirection = (w: unknown): LocaleDirection =>
   String(w ?? '').toLowerCase().trim() === 'rtl' ? 'rtl' : 'ltr';
 
-/** Pre-chat form field input type (`packages/shared` PreChatField.type). */
-export type PreChatFieldType = 'text' | 'email' | 'phone' | 'number' | 'textarea' | 'select';
-const PRE_CHAT_FIELD_TYPES: readonly PreChatFieldType[] = [
+/** The input types both forms share: each one is a value the visitor enters. */
+type ValueFieldType = 'text' | 'email' | 'phone' | 'number' | 'textarea' | 'select';
+const VALUE_FIELD_TYPES: readonly ValueFieldType[] = [
   'text',
   'email',
   'phone',
@@ -133,17 +133,33 @@ const PRE_CHAT_FIELD_TYPES: readonly PreChatFieldType[] = [
   'textarea',
   'select',
 ];
+
+/**
+ * Pre-chat form field input type (`packages/shared` PreChatField.type).
+ *
+ * `consent` is a checkbox the visitor ticks to agree to something — usually
+ * the workspace's privacy notice. Its `label` is the sentence they agree to
+ * and `policyUrl` an optional link beside it. Not a value: it never goes into
+ * `fields`; the ticked ids travel as `consents` (see `startSession`). The
+ * server only sends these to a client that asked for them — see
+ * `EasyLiveChat.supportsConsent`.
+ *
+ * A type this SDK does not know reads as `text`, as it always has.
+ */
+export type PreChatFieldType = ValueFieldType | 'consent';
+const PRE_CHAT_FIELD_TYPES: readonly PreChatFieldType[] = [...VALUE_FIELD_TYPES, 'consent'];
 export const parsePreChatFieldType = (w: unknown): PreChatFieldType =>
   parseWire(PRE_CHAT_FIELD_TYPES, w, 'text');
 
 /**
- * Post-chat form field types. A superset of {@link PreChatFieldType}: the
- * survey shown after a conversation ends can also ask for a CSAT `rating` and
- * a yes/no `checkbox`.
+ * Post-chat form field types: the value types of {@link PreChatFieldType},
+ * plus a CSAT `rating` and a yes/no `checkbox` the survey shown after a
+ * conversation ends can also ask for. (No `consent`: that belongs to the
+ * pre-chat form.)
  */
-export type PostChatFieldType = PreChatFieldType | 'checkbox' | 'rating';
+export type PostChatFieldType = ValueFieldType | 'checkbox' | 'rating';
 const POST_CHAT_FIELD_TYPES: readonly PostChatFieldType[] = [
-  ...PRE_CHAT_FIELD_TYPES,
+  ...VALUE_FIELD_TYPES,
   'checkbox',
   'rating',
 ];

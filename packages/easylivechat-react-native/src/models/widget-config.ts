@@ -77,6 +77,14 @@ export interface WidgetConfig {
    */
   postChatForm: PostChatForm;
   allowedOrigins: string[];
+
+  /**
+   * The workspace's "Show help articles" switch. When true the visitor may
+   * search and read the workspace's published help articles
+   * (`EasyLiveChat.searchHelp` / `getHelpArticle`). Absent on an older server,
+   * which reads as false — nothing is offered that cannot be served.
+   */
+  helpArticlesEnabled: boolean;
 }
 
 function nonEmpty(raw: Record<string, unknown>, key: string, fallback: string): string {
@@ -128,6 +136,7 @@ export function parseWidgetConfig(raw: Record<string, unknown>): WidgetConfig {
     allowedOrigins: Array.isArray(raw.allowedOrigins)
       ? raw.allowedOrigins.map((o) => String(o))
       : [],
+    helpArticlesEnabled: raw.helpArticlesEnabled === true,
   };
 }
 
@@ -161,6 +170,14 @@ export interface WorkspaceAvailability {
   nextOpenLocal?: string;
   /** The tenant's configured IANA timezone, e.g. `Asia/Baghdad`. */
   timezone?: string;
+  /**
+   * Whether the workspace's AI assistant answers a message sent right now.
+   *
+   * When it does, "we're offline, leave a message" is untrue — someone replies
+   * in seconds — so the closed and busy notices should say the assistant can
+   * help in the meantime instead. Absent on older servers, which read as false.
+   */
+  assistantCovers: boolean;
 }
 
 function parseIsoDate(v: unknown): Date | null {
@@ -208,6 +225,7 @@ export function parseWorkspaceAvailability(raw: Record<string, unknown>): Worksp
     closureLabel: trimmedOrUndefined(raw.closureLabel),
     nextOpenLocal: trimmedOrUndefined(raw.nextOpenLocal),
     timezone: trimmedOrUndefined(raw.timezone),
+    assistantCovers: raw.assistantCovers === true,
   };
 }
 
@@ -244,6 +262,11 @@ export interface ConfigResponse {
   closureLabel?: string;
   nextOpenLocal?: string;
   timezone?: string;
+  /**
+   * Whether the AI assistant answers a message sent right now. See
+   * {@link WorkspaceAvailability.assistantCovers}.
+   */
+  assistantCovers: boolean;
 }
 
 /** True when the tenant chose to show a notice and take nothing. */
@@ -297,6 +320,9 @@ export function parseConfigResponse(raw: Record<string, unknown>): ConfigRespons
     closureLabel: trimmedOrUndefined(raw.closureLabel),
     nextOpenLocal: trimmedOrUndefined(raw.nextOpenLocal),
     timezone: trimmedOrUndefined(raw.timezone),
+    // Absent on a server that predates the assistant: false, so nothing claims
+    // an answer is coming that nobody will send.
+    assistantCovers: raw.assistantCovers === true,
   };
 }
 

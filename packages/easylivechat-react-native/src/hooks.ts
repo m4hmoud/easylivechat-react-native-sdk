@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
 import { EasyLiveChat } from './client';
 import type { EasyLiveChatError } from './errors';
 import type { ChatMessage } from './models/chat-message';
-import type { ProactiveMessage } from './models/results';
+import type { DeletedMessage, ProactiveMessage } from './models/results';
 import type {
   AvailabilityReason,
   VisitorMode,
@@ -44,8 +44,30 @@ export function useConnectionState(): ConnectionState {
   return useEasyLiveChatStore(EasyLiveChat.instance.connection);
 }
 
+/**
+ * Someone on the team is composing a reply — a person, or the AI assistant
+ * ({@link useAssistantTyping} says which).
+ */
 export function useAgentTyping(): boolean {
   return useEasyLiveChatStore(EasyLiveChat.instance.agentTyping);
+}
+
+/**
+ * The typing in {@link useAgentTyping} is the AI assistant composing a reply,
+ * so the row can say "Assistant is typing" rather than imply a person is
+ * there. Unlike a person's, it holds until the reply lands.
+ */
+export function useAssistantTyping(): boolean {
+  return useEasyLiveChatStore(EasyLiveChat.instance.assistantTyping);
+}
+
+/**
+ * The AI assistant answers a message sent right now — while true, a "we're
+ * closed / nobody's available" notice should say the assistant can help in the
+ * meantime instead. Also on {@link useWorkspaceAvailability}.
+ */
+export function useAssistantCovers(): boolean {
+  return useEasyLiveChatStore(EasyLiveChat.instance.assistantCovers);
 }
 
 export function useUnreadCount(): number {
@@ -69,6 +91,11 @@ export interface WorkspaceAvailabilityView {
   workspaceClosed: boolean;
   /** `visitorMode === 'NOTICE_ONLY'` — disable the composer, do not hide it. */
   composerLocked: boolean;
+  /**
+   * The AI assistant answers a message sent right now. While true, "we're
+   * offline, leave a message" is untrue — say the assistant can help instead.
+   */
+  assistantCovers: boolean;
 }
 
 /**
@@ -88,6 +115,7 @@ export function useWorkspaceAvailability(): WorkspaceAvailabilityView {
   const nextOpenLocal = useEasyLiveChatStore(elc.nextOpenLocal);
   const timezone = useEasyLiveChatStore(elc.workspaceTimezone);
   const closureLabel = useEasyLiveChatStore(elc.closureLabel);
+  const assistantCovers = useEasyLiveChatStore(elc.assistantCovers);
 
   return useMemo(
     () => ({
@@ -101,6 +129,7 @@ export function useWorkspaceAvailability(): WorkspaceAvailabilityView {
       closureLabel,
       workspaceClosed: elc.workspaceClosed,
       composerLocked: visitorMode === 'NOTICE_ONLY',
+      assistantCovers,
     }),
     [
       elc,
@@ -112,6 +141,7 @@ export function useWorkspaceAvailability(): WorkspaceAvailabilityView {
       nextOpenLocal,
       timezone,
       closureLabel,
+      assistantCovers,
     ],
   );
 }
@@ -132,6 +162,11 @@ export function useEasyLiveChat(): EasyLiveChat {
 /** Subscribe to each arriving message for the life of the component. */
 export function useOnMessage(fn: (m: ChatMessage) => void): void {
   useEffect(() => EasyLiveChat.instance.onMessage(fn), [fn]);
+}
+
+/** Subscribe to messages an agent unsent for the life of the component. */
+export function useOnMessageDeleted(fn: (d: DeletedMessage) => void): void {
+  useEffect(() => EasyLiveChat.instance.onMessageDeleted(fn), [fn]);
 }
 
 /** Subscribe to proactive agent outreach for the life of the component. */

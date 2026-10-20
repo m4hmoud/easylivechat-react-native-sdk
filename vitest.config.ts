@@ -1,10 +1,10 @@
 import { defineConfig } from 'vitest/config';
 
 // One project: the core is plain TS/JS (it touches `react-native` only for
-// AppState/Platform, both stubbed in test/setup-rn.ts), and the UI's pure
-// helpers — bidi, l10n, linkify, chime rules, theme — are testable the same
-// way. Component rendering is covered by the example app; RNTL would pull the
-// whole Metro/Babel toolchain into a Node runner for very little more.
+// AppState/Platform), and the UI's helpers and components run against the
+// rendering stand-in in test/react-native-mock.ts — components are rendered
+// with @testing-library/react-native, without Metro or Babel. How that is
+// wired, and its limits: test/README.md.
 export default defineConfig({
   test: {
     globals: false,

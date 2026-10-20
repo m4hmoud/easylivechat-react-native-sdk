@@ -1,39 +1,70 @@
+import { EasyLiveChat } from './client';
+import { EasyLiveChatError, EasyLiveChatErrorCode } from './errors';
+import type { PushPlatform } from './rest-client';
+
 /**
- * Background push notifications are a DOCUMENTED NON-GOAL of this SDK.
+ * The old background-push stub, kept as a thin alias so a host that wired it
+ * up keeps compiling.
  *
- * "An agent replied while the app was closed" needs a server-side *visitor*
- * push registry and fan-out. The backend currently pushes to AGENTS only
- * (`apps/ios-tenant`, `apps/android-tenant` register device tokens; visitors
- * have nowhere to register one), and building it would require server changes
- * this SDK is explicitly forbidden from making.
+ * It said push was a non-goal because the server had nowhere for a VISITOR to
+ * register a device. That stopped being true: the server has
+ * `POST /api/widget/:slug/push/register` (and the matching unregister), and
+ * `EasyLiveChat.instance.setPushToken()` drives it — held until a session can
+ * authenticate it, moved on token rotation, dropped on an identity switch and
+ * on `reset()`. Everything here forwards to that.
  *
- * This stub exists so the shape of the eventual API is visible, and so a host
- * that calls it gets an honest answer instead of silence. Everything here is a
- * no-op today.
- *
- * What a host CAN do in the meantime:
- *  - Keep the app foregrounded flows working — the `/widgets` socket
- *    reconnects and backfills, so nothing is lost while the app is merely
- *    backgrounded and later resumed.
- *  - Use your own push infrastructure, and on tap call
- *    `EasyLiveChat.instance.open()` to land the visitor back in their thread.
+ * @deprecated Use `EasyLiveChat.instance.setPushToken(token, { platform })`.
  */
 export const EasyLiveChatPush = {
-  /** Always false. There is no visitor push registry to register against. */
+  /**
+   * True: visitors can be notified now.
+   *
+   * @deprecated There is nothing left to feature-detect.
+   */
   get isSupported(): boolean {
-    return false;
+    return true;
   },
 
   /**
-   * No-op. Kept so a host's wiring compiles today and starts working the day
-   * the server grows a visitor push registry.
+   * Forwards to `EasyLiveChat.instance.setPushToken(token, options)`.
+   *
+   * The registration needs the device's platform, which the old stub never
+   * asked for — and the core never imports `react-native`, so it cannot look
+   * `Platform.OS` up itself. Called without one it REJECTS with a message
+   * saying so, rather than resolving as if a device had been registered: a
+   * call that silently does nothing is what this stub used to be.
+   *
+   * @deprecated Use `EasyLiveChat.instance.setPushToken(token, { platform })`.
    */
-  async registerDeviceToken(_token: string): Promise<void> {
-    // Intentionally empty — see the module doc.
+  registerDeviceToken(
+    token: string,
+    options: { platform?: PushPlatform; appVersion?: string } = {},
+  ): Promise<void> {
+    const platform = options.platform;
+    if (platform == null) {
+      return Promise.reject(
+        new EasyLiveChatError(EasyLiveChatErrorCode.UNKNOWN, {
+          message:
+            "EasyLiveChatPush.registerDeviceToken(token) needs { platform: 'IOS' | 'ANDROID' } " +
+            'now that visitor push is supported — or call ' +
+            'EasyLiveChat.instance.setPushToken(token, { platform }).',
+        }),
+      );
+    }
+    return EasyLiveChat.instance.setPushToken(token, {
+      platform,
+      appVersion: options.appVersion,
+    });
   },
 
-  /** No-op counterpart to {@link registerDeviceToken}. */
-  async unregisterDeviceToken(): Promise<void> {
-    // Intentionally empty — see the module doc.
+  /**
+   * Forwards to `EasyLiveChat.instance.setPushToken(null, …)`: stop notifying
+   * this device.
+   *
+   * @deprecated Use `EasyLiveChat.instance.setPushToken(null, { platform })`.
+   */
+  unregisterDeviceToken(): Promise<void> {
+    // The platform describes a token being registered; with none it is unread.
+    return EasyLiveChat.instance.setPushToken(null, { platform: 'ANDROID' });
   },
 } as const;

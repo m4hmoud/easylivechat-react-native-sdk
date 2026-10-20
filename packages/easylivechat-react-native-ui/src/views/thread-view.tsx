@@ -1,11 +1,17 @@
 import {
   type ChatMessage,
   EasyLiveChat,
+  botButtonsOf,
+  buttonsOpen,
+  chosenButtonId,
   isFromCustomer,
+  quickRepliesOnOffer,
   useAgentLastReadAt,
   useAgentTyping,
+  useAssistantTyping,
   useEasyLiveChatMessages,
   useWidgetConfig,
+  useWorkspaceAvailability,
 } from '@easylivechat/react-native';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -47,8 +53,14 @@ const NEAR_BOTTOM_PX = 160;
 export function ThreadView({ theme, strings }: ThreadViewProps): React.JSX.Element {
   const messages = useEasyLiveChatMessages();
   const agentLastReadAt = useAgentLastReadAt();
+  // `agentTyping` stays true while the ASSISTANT composes too — it decides
+  // whether the row shows; `assistantTyping` only decides what it is called.
   const typing = useAgentTyping();
+  const assistantTyping = useAssistantTyping();
   const config = useWidgetConfig();
+  // Subscribed, not read off the client at render time: the workspace can
+  // switch to "notice only" mid-chat, and the chips must go dead with it.
+  const { composerLocked } = useWorkspaceAvailability();
   const dir = useDirectionStyles();
 
   const listRef = useRef<FlatListType<ChatMessage>>(null);
@@ -116,19 +128,86 @@ export function ThreadView({ theme, strings }: ThreadViewProps): React.JSX.Eleme
     [loadOlder],
   );
 
+  // A tapped quick reply or reply button is on its way: every chip waits
+  // until the server has it (or has refused it), so a double tap sends once.
+  const [sending, setSending] = useState(false);
+  /**
+   * The guard itself. State alone cannot be one: two taps inside one frame
+   * both run before React has re-rendered, and both read `sending` as false.
+   * The state only draws the chips disabled.
+   */
+  const inFlight = useRef(false);
+  const offer = quickRepliesOnOffer(messages);
+
+  const sendQuickReply = useCallback(async (messageId: string, reply: string) => {
+    if (inFlight.current) return;
+    // Asked again at the moment of the tap, not read off the chip.
+    const now = quickRepliesOnOffer(EasyLiveChat.instance.messages.get());
+    if (now?.messageId !== messageId || !now.replies.includes(reply)) return;
+    inFlight.current = true;
+    setSending(true);
+    try {
+      await EasyLiveChat.instance.sendMessage(reply).serverMessageId;
+    } catch {
+      // The send path owns failure: it leaves a failed bubble with retry.
+    } finally {
+      inFlight.current = false;
+      setSending(false);
+    }
+  }, []);
+
+  const sendButton = useCallback(async (message: ChatMessage, buttonId: string, label: string) => {
+    if (inFlight.current || !buttonsOpen(EasyLiveChat.instance.messages.get(), message.id)) return;
+    inFlight.current = true;
+    setSending(true);
+    try {
+      await EasyLiveChat.instance.answerButton(message, { buttonId, label }).serverMessageId;
+    } catch {
+      // The send path owns failure, as above.
+    } finally {
+      inFlight.current = false;
+      setSending(false);
+    }
+  }, []);
+
   const renderItem = useCallback(
-    ({ item }: { item: ChatMessage }) => (
-      <MessageBubble
-        message={item}
-        theme={theme}
-        showAgentName={showAgentNames}
-        showAgentAvatar={showAgentAvatars}
-        strings={strings}
-        agentLastReadAt={agentLastReadAt}
-        onOpenImage={setViewerUri}
-      />
-    ),
-    [theme, showAgentNames, showAgentAvatars, strings, agentLastReadAt],
+    ({ item }: { item: ChatMessage }) => {
+      // Quick replies only under the newest message; reply buttons (a bot's,
+      // or an agent's) live while their question is open, the chosen one
+      // marked (models/message-extras).
+      const hasButtons = botButtonsOf(item) != null || item.contentType === 'card';
+      const open = hasButtons && buttonsOpen(messages, item.id);
+      const locked = sending || composerLocked;
+      return (
+        <MessageBubble
+          message={item}
+          theme={theme}
+          showAgentName={showAgentNames}
+          showAgentAvatar={showAgentAvatars}
+          strings={strings}
+          agentLastReadAt={agentLastReadAt}
+          onOpenImage={setViewerUri}
+          quickReplies={offer?.messageId === item.id ? offer.replies : []}
+          onQuickReply={locked ? null : (reply) => void sendQuickReply(item.id, reply)}
+          showButtons
+          chosenButtonId={hasButtons ? chosenButtonId(messages, item.id) : null}
+          onButton={!open || locked ? null : (id, label) => void sendButton(item, id, label)}
+        />
+      );
+    },
+    [
+      theme,
+      showAgentNames,
+      showAgentAvatars,
+      strings,
+      agentLastReadAt,
+      messages,
+      offer,
+      sending,
+      composerLocked,
+      sendQuickReply,
+      sendButton,
+    ],
   );
 
   const header = (
@@ -149,7 +228,16 @@ export function ThreadView({ theme, strings }: ThreadViewProps): React.JSX.Eleme
         keyExtractor={keyExtractor}
         renderItem={renderItem}
         ListHeaderComponent={header}
-        ListFooterComponent={typing ? <TypingRow theme={theme} label={strings.t('agentTyping')} /> : null}
+        // The trailing typing indicator — named for the assistant when it is
+        // the one composing, so the wait is not mistaken for a person.
+        ListFooterComponent={
+          typing ? (
+            <TypingRow
+              theme={theme}
+              label={strings.t(assistantTyping ? 'assistantTyping' : 'agentTyping')}
+            />
+          ) : null
+        }
         contentContainerStyle={styles.content}
         onScroll={onScroll}
         scrollEventThrottle={64}

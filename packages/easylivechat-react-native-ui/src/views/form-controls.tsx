@@ -282,6 +282,80 @@ export function CheckboxRow({
   );
 }
 
+/**
+ * A pre-chat consent checkbox: the box, the tenant's sentence beside it and,
+ * under the sentence, the privacy-policy link.
+ *
+ * The sentence is TENANT COPY — verbatim, start-aligned, and wrapping however
+ * long it is (up to 500 characters); it is the checkbox's own label, so
+ * tapping it ticks the box. The link sits OUTSIDE that pressable, as its own
+ * target and its own accessibility element: a screen reader must be able to
+ * reach it, and reading what you agree to is not agreeing to it.
+ */
+export function ConsentField({
+  sentence,
+  required,
+  checked,
+  enabled,
+  hasError,
+  policyLabel,
+  onOpenPolicy,
+  theme,
+  onChange,
+}: {
+  sentence: string;
+  required: boolean;
+  checked: boolean;
+  enabled: boolean;
+  hasError: boolean;
+  /** The localized "Privacy policy"; with `onOpenPolicy`, draws the link. */
+  policyLabel?: string;
+  onOpenPolicy?: () => void;
+  theme: EasyLiveChatTheme;
+  onChange: (checked: boolean) => void;
+}): React.JSX.Element {
+  const dir = useDirectionStyles();
+  return (
+    <View>
+      <Pressable
+        disabled={!enabled}
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked, disabled: !enabled }}
+        accessibilityLabel={sentence}
+        onPress={() => onChange(!checked)}
+        hitSlop={4}
+        style={[styles.consentRow, { flexDirection: dir.row }]}
+      >
+        <View style={styles.consentBox}>
+          <CheckboxIcon
+            color={theme.primary}
+            borderColor={hasError ? ERROR_COLOR : withAlpha(theme.text, 0.45)}
+            checked={checked}
+            size={20}
+          />
+        </View>
+        <Text style={[styles.consentText, dir.textStart, { color: theme.text }]}>
+          {required ? `${sentence} *` : sentence}
+        </Text>
+      </Pressable>
+      {policyLabel != null && onOpenPolicy != null ? (
+        <View style={{ flexDirection: dir.row }}>
+          {/* The box's width plus its gap, so the link starts under the sentence. */}
+          <View style={styles.consentIndent} />
+          <Text
+            accessibilityRole="link"
+            onPress={onOpenPolicy}
+            suppressHighlighting
+            style={[styles.consentLink, dir.textStart, { color: theme.primary }]}
+          >
+            {policyLabel}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 export function RatingRow({
   value,
   enabled,
@@ -367,6 +441,17 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   selectTrigger: { alignItems: 'center' },
+  consentRow: { alignItems: 'flex-start', paddingVertical: 2 },
+  // Nudges the 20px box onto the first line's centre (15px text, 21px line).
+  consentBox: { paddingTop: 1 },
+  consentText: { flex: 1, fontSize: 15, lineHeight: 21, marginHorizontal: 10 },
+  consentIndent: { width: 30 },
+  consentLink: {
+    fontSize: 14,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
+    paddingVertical: 6,
+  },
   radioRow: {
     alignItems: 'center',
     borderWidth: 1,

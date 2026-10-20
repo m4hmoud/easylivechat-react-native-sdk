@@ -2,6 +2,7 @@ import { type Socket, io } from 'socket.io-client';
 
 import { type ChatMessage, parseChatMessage } from './models/chat-message';
 import {
+  type DeletedMessage,
   type ProactiveMessage,
   type SendAck,
   parseProactiveMessage,
@@ -20,12 +21,29 @@ export interface WidgetSocketHandlers {
   /** `message:new` — the raw Prisma row, already parsed leniently. */
   onMessageNew(message: ChatMessage): void;
   /**
-   * `message:updated` — a media re-host swap or a delivery receipt. Replace by
-   * id. The web client does NOT register this; we do.
+   * `message:updated` — the whole message again, to replace by id: an agent
+   * editing their reply (new `body`, `editedAt` set), a media re-host swap, a
+   * delivery receipt.
    */
   onMessageUpdated(message: ChatMessage): void;
-  /** `agent:typing` — requires an explicit `true`. */
+  /**
+   * `message:deleted` — `{ id, conversationId }`: an agent unsent a message.
+   * It leaves the thread with no placeholder.
+   */
+  onMessageDeleted(deleted: DeletedMessage): void;
+  /** `agent:typing` from a person — requires an explicit `true`. */
   onAgentTyping(isTyping: boolean): void;
+  /**
+   * `agent:typing` from the AI assistant (`actor: 'assistant'`).
+   *
+   * Kept apart from {@link onAgentTyping} because the two behave differently:
+   * the assistant sends an explicit stop when its reply is ready, and a reply
+   * can take ten seconds, so the short auto-clear meant for a person typing
+   * must not apply. Optional for hand-rolled handler sets written before it
+   * existed — without it the assistant's typing reaches `onAgentTyping`, as
+   * it always did.
+   */
+  onAssistantTyping?(isTyping: boolean): void;
   /**
    * `workspace:availability` — the whole verdict, fired on connect and on
    * every change (a shift boundary, an admin editing the schedule).
@@ -133,13 +151,29 @@ export class WidgetSocket {
       if (m != null) this.handlers.onMessageUpdated(parseChatMessage(m));
     });
 
+    socket.on('message:deleted', (data: unknown) => {
+      const m = asRecord(data);
+      const id = m?.id;
+      if (typeof id !== 'string' || id.length === 0) return;
+      this.handlers.onMessageDeleted({ id, conversationId: String(m?.conversationId ?? '') });
+    });
+
     socket.on('agent:typing', (data: unknown) => {
       // The server relays whatever the agent sent, `false` included. Require
       // an explicit `true` so a malformed or empty payload cannot show a
       // phantom "agent is typing"; the controller's timeout stays as a
       // backstop for a dropped stop event.
       const m = asRecord(data);
-      this.handlers.onAgentTyping(m?.isTyping === true);
+      const isTyping = m?.isTyping === true;
+      // The assistant's typing rides the same event, marked by its actor. Read
+      // as a person's, it fell to the 4-second clear meant for one and the row
+      // vanished halfway through a reply that takes ten.
+      const onAssistant = this.handlers.onAssistantTyping;
+      if (m?.actor === 'assistant' && onAssistant != null) {
+        onAssistant.call(this.handlers, isTyping);
+        return;
+      }
+      this.handlers.onAgentTyping(isTyping);
     });
 
     socket.on('workspace:availability', (data: unknown) => {
@@ -228,6 +262,8 @@ export class WidgetSocket {
     body: string;
     attachmentUrls?: string[];
     contentType?: string;
+    /** The reply button this answers — `{ messageId, buttonId }`; the server checks it. */
+    reply?: { messageId: string; buttonId: string };
   }): Promise<SendAck> {
     const socket = this.socket;
     if (socket == null) return { ok: false, error: 'NOT_CONNECTED' };
@@ -236,6 +272,7 @@ export class WidgetSocket {
       payload.attachmentUrls = args.attachmentUrls;
     }
     if (args.contentType != null) payload.contentType = args.contentType;
+    if (args.reply != null) payload.reply = args.reply;
     return this.emitWithAck(socket, 'message:send', payload, SEND_ACK_TIMEOUT_MS);
   }
 

@@ -1,73 +1,75 @@
 /**
- * Stub `react-native` for the Node test runner.
+ * React Native, for the Node test runner. See `README.md` beside this file.
  *
- * The tests here cover PURE logic — the protocol client, the state machine,
- * bidi, linkify, the string table, theming. None of them render a component,
- * but the modules those helpers live in do import React Native, so it has to
- * exist. Rendering is verified by the example app on real devices.
+ * Two jobs, both done once per test file:
  *
- * Keeping the stub here (rather than mocking per file) also acts as a
- * guardrail: an import of something not listed below fails loudly, which is
- * how the "the core must not depend on react-native" rule stays honest.
+ * 1. `react-native` resolves to `react-native-mock.ts` — for the SDK's own
+ *    modules (ES imports, which `vi.mock` intercepts) AND for
+ *    `@testing-library/react-native`, which is plain CommonJS loaded by Node
+ *    and calls `require('react-native')` itself. `vi.mock` never sees a
+ *    `require`, and the real package cannot load under Node, so that one call
+ *    is answered by a `Module._load` hook. Both get the same object.
+ *
+ * 2. The OPTIONAL native peers are absent, deterministically. Every one of
+ *    them is imported lazily inside a `try` and degrades when the import
+ *    fails, so "not installed" is a state the SDK must handle anyway — and
+ *    the real packages, which reach for native modules, would fail the same
+ *    way only slower and noisier. A test that wants one present mocks it
+ *    itself; its `vi.mock` replaces this one.
  */
+import Module from 'node:module';
+
 import { vi } from 'vitest';
 
-vi.mock('react-native', () => {
-  const identity = <T,>(styles: T): T => styles;
-  const Component = (name: string): unknown => {
-    const C = (): null => null;
-    Object.defineProperty(C, 'name', { value: name });
-    return C;
-  };
+vi.mock('react-native', async () => (await import('./react-native-mock')).reactNativeMock);
 
-  return {
-    // ── APIs the SDK actually calls ──
-    AppState: {
-      currentState: 'active' as const,
-      addEventListener: () => ({ remove: () => {} }),
-    },
-    Platform: {
-      OS: 'ios' as const,
-      select: (o: Record<string, unknown>) => o.ios ?? o.default,
-    },
-    NativeModules: {
-      SettingsManager: { settings: { AppleLocale: 'en_US', AppleLanguages: ['en-US'] } },
-      I18nManager: { localeIdentifier: 'en_US' },
-    },
-    I18nManager: { isRTL: false },
-    Linking: { openURL: vi.fn(async () => undefined) },
-    Dimensions: { get: () => ({ width: 390, height: 844 }) },
-    StyleSheet: {
-      create: identity,
-      flatten: identity,
-      hairlineWidth: 1,
-      absoluteFill: {},
-      absoluteFillObject: {},
-    },
-    Animated: {
-      Value: class {
-        constructor(public value: number) {}
-        interpolate(): unknown {
-          return this;
-        }
-      },
-      View: Component('Animated.View'),
-      timing: () => ({ start: () => {}, stop: () => {} }),
-      loop: () => ({ start: () => {}, stop: () => {} }),
-    },
-    Easing: { linear: (t: number) => t },
-
-    // ── components, present so the modules import ──
-    View: Component('View'),
-    Text: Component('Text'),
-    TextInput: Component('TextInput'),
-    Pressable: Component('Pressable'),
-    Image: Component('Image'),
-    Modal: Component('Modal'),
-    ScrollView: Component('ScrollView'),
-    FlatList: Component('FlatList'),
-    SafeAreaView: Component('SafeAreaView'),
-    ActivityIndicator: Component('ActivityIndicator'),
-    KeyboardAvoidingView: Component('KeyboardAvoidingView'),
-  };
+vi.mock('expo-image', () => {
+  throw new Error('expo-image is not installed in tests');
 });
+vi.mock('expo-audio', () => {
+  throw new Error('expo-audio is not installed in tests');
+});
+vi.mock('expo-file-system', () => {
+  throw new Error('expo-file-system is not installed in tests');
+});
+vi.mock('expo-image-picker', () => {
+  throw new Error('expo-image-picker is not installed in tests');
+});
+vi.mock('expo-document-picker', () => {
+  throw new Error('expo-document-picker is not installed in tests');
+});
+vi.mock('expo-secure-store', () => {
+  throw new Error('expo-secure-store is not installed in tests');
+});
+vi.mock('@react-native-async-storage/async-storage', () => {
+  throw new Error('@react-native-async-storage/async-storage is not installed in tests');
+});
+
+const { reactNativeMock } = await import('./react-native-mock');
+
+// Globals React Native's runtime defines and Node does not.
+const runtime = globalThis as typeof globalThis & {
+  requestAnimationFrame?: (cb: (t: number) => void) => unknown;
+  cancelAnimationFrame?: (handle: unknown) => void;
+};
+runtime.requestAnimationFrame ??= (cb) => setTimeout(() => cb(Date.now()), 0);
+runtime.cancelAnimationFrame ??= (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>);
+
+type Load = (request: string, parent: unknown, isMain: boolean) => unknown;
+const loader = Module as unknown as { _load: Load };
+const hooks = globalThis as typeof globalThis & {
+  __elcReactNative?: unknown;
+  __elcOriginalLoad?: Load;
+};
+
+// Re-pointed every file (each file gets a fresh module graph, so a fresh
+// mock); the hook itself is installed once per process.
+hooks.__elcReactNative = reactNativeMock;
+if (hooks.__elcOriginalLoad == null) {
+  const original = loader._load;
+  hooks.__elcOriginalLoad = original;
+  loader._load = function load(this: unknown, request, parent, isMain) {
+    if (request === 'react-native') return hooks.__elcReactNative;
+    return original.call(this, request, parent, isMain);
+  };
+}

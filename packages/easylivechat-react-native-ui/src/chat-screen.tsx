@@ -4,6 +4,7 @@ import {
   EasyLiveChat,
   isFromCustomer,
   postChatHasFields,
+  useEasyLiveChatMessages,
   useEasyLiveChatPhase,
   useIsBooted,
   useOnError,
@@ -26,13 +27,14 @@ import {
 import { type Direction, DirectionProvider, useDirectionStyles } from './direction';
 import { ElcChime } from './chime';
 import { EasyLiveChatEndChatButton } from './end-chat-button';
-import { BackIcon, OfflineIcon } from './icons';
+import { ArticleIcon, BackIcon, ChevronIcon, OfflineIcon } from './icons';
 import { overrideAll, overrideByLocale, setHostLocale, stringsFor } from './l10n';
 import type { ElcAttachmentPicker } from './picked-file';
 import { type EasyLiveChatTheme, themeFromConfig, withAlpha } from './theme';
 import { ClosedNoticeBanner, ClosedNoticeView } from './views/closed-notice-view';
 import { ComposerBar } from './views/composer-bar';
 import { FeedbackPromptView } from './views/feedback-prompt-view';
+import { HelpView, offerHelpEntry } from './views/help-view';
 import { PostChatFormView } from './views/post-chat-form-view';
 import { PreChatFormView } from './views/pre-chat-form-view';
 import { ThreadView } from './views/thread-view';
@@ -91,6 +93,16 @@ export interface EasyLiveChatScreenProps {
   appBarTitle?: string;
   /** Called by the app bar's back button and by the post-chat "close". */
   onRequestClose?: () => void;
+  /**
+   * Offer the workspace's help articles before the visitor has written — an
+   * entry above the chat that opens a search + article view in place, with
+   * "Still need help? Start a chat" leading back. Shown ONLY while the
+   * workspace's "Show help articles" switch is on
+   * (`widgetConfig.helpArticlesEnabled`); with it off nothing changes.
+   * Default true. Pass false to keep help out of the chat (and show
+   * `EasyLiveChatHelpScreen` somewhere of your own instead).
+   */
+  showHelpArticles?: boolean;
 }
 
 /**
@@ -118,12 +130,18 @@ export function EasyLiveChatScreen(props: EasyLiveChatScreenProps): React.JSX.El
     showAppBar = false,
     appBarTitle,
     onRequestClose,
+    showHelpArticles = true,
   } = props;
 
   const booted = useIsBooted();
   const phase = useEasyLiveChatPhase();
   const config = useWidgetConfig();
   const { workspaceClosed, composerLocked } = useWorkspaceAvailability();
+  const messages = useEasyLiveChatMessages();
+
+  /** The help view is up, over the (still mounted) phase view. */
+  const [helpOpen, setHelpOpen] = useState(false);
+  const helpAvailable = showHelpArticles && config?.helpArticlesEnabled === true;
 
   // Register the host's locale + string overrides BEFORE the views read them.
   // A layout effect would be tidier but these are module-level registries, and
@@ -163,6 +181,11 @@ export function EasyLiveChatScreen(props: EasyLiveChatScreenProps): React.JSX.El
   const maybeOpen = useCallback(() => {
     if (openRequested.current) return;
     if (!EasyLiveChat.instance.isBooted) return;
+    // This UI's pre-chat form draws consent checkboxes (a box, the tenant's
+    // sentence, the privacy-policy link), so the config is asked for them.
+    // Set before the open()/refreshAvailability() below, both of which fetch
+    // the config; the core leaves consent out for hosts with their own form.
+    EasyLiveChat.instance.supportsConsent = true;
     const p = EasyLiveChat.instance.phase.get();
     // Open on a fresh mount when idle, OR when a previous session ended at the
     // feedback screen — so reopening after rating starts a FRESH conversation
@@ -242,6 +265,24 @@ export function EasyLiveChatScreen(props: EasyLiveChatScreenProps): React.JSX.El
     startOpen();
   }, [startOpen]);
 
+  // The workspace turned help off while it was up.
+  useEffect(() => {
+    if (!helpAvailable) setHelpOpen(false);
+  }, [helpAvailable]);
+
+  const openHelp = useCallback(() => setHelpOpen(true), []);
+  const closeHelp = useCallback(() => setHelpOpen(false), []);
+
+  // Before the visitor has written, on the screens a visitor can be helped
+  // from: the empty chat, the pre-chat form, and the closed notice — where an
+  // answer they can read now is worth the most.
+  const helpEntryVisible =
+    showHelpArticles &&
+    offerHelpEntry(config, messages) &&
+    error == null &&
+    (phase === 'chat' || phase === 'prechat' || phase === 'offline');
+  const showingHelp = helpOpen && helpAvailable;
+
   if (!booted) return <BootRequired />;
 
   return (
@@ -264,12 +305,30 @@ export function EasyLiveChatScreen(props: EasyLiveChatScreenProps): React.JSX.El
             <ChatAppBar
               theme={theme}
               title={appBarTitle ?? strings.t('chatTitle')}
+              // The same word as help's back, in every language.
+              backLabel={strings.t('helpBack')}
               locale={locale}
               onBack={onRequestClose}
             />
           ) : null}
 
-          <View style={styles.root}>
+          {showingHelp ? (
+            <HelpView
+              theme={theme}
+              strings={strings}
+              onClose={closeHelp}
+              // "Start a chat" leads back to the chat — unless the workspace
+              // takes no new messages, where it would lead nowhere.
+              onStartChat={composerLocked ? undefined : closeHelp}
+            />
+          ) : null}
+
+          {/* Hidden, not unmounted, while help is up: a draft the visitor had
+              started in the composer must still be there when they come back. */}
+          <View style={[styles.root, showingHelp ? styles.hidden : null]}>
+            {helpEntryVisible ? (
+              <HelpEntry theme={theme} label={strings.t('helpBrowse')} onPress={openHelp} />
+            ) : null}
             <PhaseView
               phase={phase}
               error={error}
@@ -395,11 +454,13 @@ function PhaseView({
 function ChatAppBar({
   theme,
   title,
+  backLabel,
   locale,
   onBack,
 }: {
   theme: EasyLiveChatTheme;
   title: string;
+  backLabel: string;
   locale?: string;
   onBack?: () => void;
 }): React.JSX.Element {
@@ -418,6 +479,7 @@ function ChatAppBar({
       <Pressable
         onPress={onBack}
         accessibilityRole="button"
+        accessibilityLabel={backLabel}
         style={styles.appBarButton}
         hitSlop={8}
       >
@@ -466,8 +528,45 @@ function ErrorRetry({
   );
 }
 
+/**
+ * The way into the help articles: one row above the chat, on the leading edge
+ * like everything else, with a chevron pointing the way it opens.
+ */
+function HelpEntry({
+  theme,
+  label,
+  onPress,
+}: {
+  theme: EasyLiveChatTheme;
+  label: string;
+  onPress: () => void;
+}): React.JSX.Element {
+  const dir = useDirectionStyles();
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      style={({ pressed }) => [
+        styles.helpEntry,
+        {
+          flexDirection: dir.row,
+          backgroundColor: withAlpha(theme.primary, pressed ? 0.14 : 0.07),
+        },
+      ]}
+    >
+      <ArticleIcon color={theme.primary} size={18} />
+      <Text numberOfLines={2} style={[styles.helpEntryText, dir.textStart, { color: theme.text }]}>
+        {label}
+      </Text>
+      <View style={dir.mirror}>
+        <ChevronIcon color={withAlpha(theme.text, 0.4)} size={12} />
+      </View>
+    </Pressable>
+  );
+}
+
 /** Shown if the screen is presented before `EasyLiveChat.boot()` was called. */
-function BootRequired(): React.JSX.Element {
+export function BootRequired(): React.JSX.Element {
   return (
     <View style={styles.centered}>
       <Text style={styles.bootText}>
@@ -490,4 +589,15 @@ const styles = StyleSheet.create({
   },
   appBarButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   appBarTitle: { flex: 1, fontSize: 16, fontWeight: '600', marginHorizontal: 4 },
+  hidden: { display: 'none' },
+  helpEntry: {
+    alignItems: 'center',
+    marginHorizontal: 12,
+    marginTop: 10,
+    marginBottom: 2,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 12,
+  },
+  helpEntryText: { flex: 1, fontSize: 14, fontWeight: '600', marginHorizontal: 10 },
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { directionStyles, insetEnd } from '../src/direction';
+import { bubbleRadii, directionStyles, insetEnd, logicalRadii } from '../src/direction';
 
 /**
  * The chat's direction is its own; the HOST's is React Native's.
@@ -104,5 +104,49 @@ describe('an inset pinned to the trailing edge', () => {
 
   it('keeps a negative overhang', () => {
     expect(insetEnd('ltr', -2, false)).toEqual({ right: -2 });
+  });
+});
+
+/**
+ * `borderBottomStartRadius` resolves through the HOST's direction like
+ * `marginStart` does, so a bubble's tail written as `bottomStart` sat on the
+ * wrong corner whenever the chat's direction differed from the app's.
+ */
+describe('corner radii named by the chat', () => {
+  const radii = { topStart: 1, topEnd: 2, bottomStart: 3, bottomEnd: 4 };
+
+  it('are written as given when chat and host agree', () => {
+    for (const [dir, host] of [
+      ['ltr', false],
+      ['rtl', true],
+    ] as const) {
+      expect(logicalRadii(dir, radii, host)).toEqual({
+        borderTopStartRadius: 1,
+        borderTopEndRadius: 2,
+        borderBottomStartRadius: 3,
+        borderBottomEndRadius: 4,
+      });
+    }
+  });
+
+  it('swap start and end when they disagree', () => {
+    for (const [dir, host] of [
+      ['rtl', false],
+      ['ltr', true],
+    ] as const) {
+      expect(logicalRadii(dir, radii, host)).toEqual({
+        borderTopStartRadius: 2,
+        borderTopEndRadius: 1,
+        borderBottomStartRadius: 4,
+        borderBottomEndRadius: 3,
+      });
+    }
+  });
+
+  it("put the team's tail on the team's side in an Arabic chat inside an English app", () => {
+    // The team leads, which in Arabic is the right — `end` in an LTR app.
+    expect(bubbleRadii('rtl', false)).toMatchObject({ borderBottomEndRadius: 4, borderBottomStartRadius: 16 });
+    // And the visitor's own tail on their side, the left.
+    expect(bubbleRadii('rtl', true)).toMatchObject({ borderBottomStartRadius: 4, borderBottomEndRadius: 16 });
   });
 });

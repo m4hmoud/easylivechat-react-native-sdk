@@ -98,8 +98,10 @@ for exactly this reason.
 
 ## Non-goals
 
-Background push notifications, any server change, agent-side features, web
-support, and `customCss`. See the package READMEs.
+Any server change, agent-side features, web support, and `customCss`. See the
+package READMEs. (Background push for visitors is supported —
+`EasyLiveChat.instance.setPushToken()` — over the server's existing visitor
+push registry.)
 
 ## License
 

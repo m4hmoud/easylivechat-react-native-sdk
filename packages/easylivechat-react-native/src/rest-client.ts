@@ -10,6 +10,13 @@ import {
   parseSessionResult,
   parseUploadedFile,
 } from './models/results';
+import {
+  type HelpArticle,
+  type HelpArticleList,
+  type HelpViewResult,
+  parseHelpArticle,
+  parseHelpArticleList,
+} from './models/help-articles';
 import { type ConfigResponse, parseConfigResponse } from './models/widget-config';
 
 /**
@@ -46,6 +53,71 @@ export interface SessionArgs {
   locale?: string;
   resumeOnly?: boolean;
   fields?: Record<string, string>;
+  /**
+   * The host application's OWN user id, for identity verification. Sent as
+   * the top-level `userId` key; omitted when blank.
+   */
+  userId?: string;
+  /**
+   * `HMAC_SHA256(identitySecret, userId)` as hex, computed by the host's
+   * BACKEND. Sent as the top-level `userHash` key; omitted when blank.
+   */
+  userHash?: string;
+  /**
+   * The ids of the consent fields the visitor ticked, possibly none. Set, it
+   * also declares `capabilities: ['consent']`, which is what lets the server
+   * refuse a required one left unticked with `400 CONSENT_REQUIRED` +
+   * `fieldId`. Unset sends neither, and the server asks nothing about consent
+   * — the request an SDK made before consent existed.
+   */
+  consents?: readonly string[];
+}
+
+/**
+ * The device platform a visitor push registration is filed under.
+ *
+ * Bookkeeping, not routing: the server sends through FCM on both, iOS
+ * included, so this is what the dashboard and a data export show for the
+ * device. `Platform.OS === 'ios' ? 'IOS' : 'ANDROID'` is the usual line.
+ */
+export type PushPlatform = 'IOS' | 'ANDROID';
+
+/** Arguments of `POST /:slug/push/register`. */
+export interface RegisterPushArgs {
+  /** The widget JWT — the server takes the tenant and contact from it. */
+  token: string;
+  /** The device's FCM registration token. */
+  pushToken: string;
+  platform: PushPlatform;
+  /** Picks the language of the wording the server writes ("Sent a photo"). */
+  locale?: string;
+  appVersion?: string;
+}
+
+/** Arguments of `GET /help/articles`. */
+export interface HelpListArgs {
+  /** Two or more characters search; less (or none) lists the top articles. */
+  q?: string;
+  category?: string;
+  limit?: number;
+}
+
+/**
+ * What a client declares when it can show a consent checkbox: `?caps=` on
+ * `GET /config`, `capabilities` on `POST /session` and `/offline-form`
+ * (`CONSENT_CAPABILITY` in `packages/shared/src/pre-chat-form.ts`).
+ */
+export const CONSENT_CAPABILITY = 'consent';
+
+/**
+ * The `capabilities` + `consents` pair, or nothing. Always sent together: the
+ * ids mean nothing to the server without the declaration, and the declaration
+ * alone would make it demand consent the caller never said it collected.
+ * Duplicates are dropped.
+ */
+function consentBody(consents: readonly string[] | undefined): Record<string, unknown> {
+  if (consents == null) return {};
+  return { capabilities: [CONSENT_CAPABILITY], consents: [...new Set(consents)] };
 }
 
 /**
@@ -137,9 +209,15 @@ export class RestClient {
    *
    * `origin` is usually omitted on native — the server's `allowedOrigins` gate
    * is skipped entirely when no origin is supplied.
+   *
+   * `consent: true` adds `caps=consent`. Without it the server leaves consent
+   * fields out of the pre-chat form, because a client that cannot draw a
+   * checkbox would draw a text box labelled "I agree to…" instead. A server
+   * that predates consent ignores the parameter.
    */
-  async getConfig(): Promise<ConfigResponse> {
+  async getConfig(options: { consent?: boolean } = {}): Promise<ConfigResponse> {
     const raw = await this.getJson(`${this.base}/${this.slug}/config`, {
+      caps: options.consent === true ? CONSENT_CAPABILITY : undefined,
       channel: emptyToUndefined(this.config.channel),
       origin: emptyToUndefined(this.config.originHeader),
       // The CONTENT locale: which translation of the tenant's own copy to
@@ -193,9 +271,132 @@ export class RestClient {
     body.historyScope = 'session';
 
     if (args.fields != null && Object.keys(args.fields).length > 0) body.fields = args.fields;
+    Object.assign(body, consentBody(args.consents));
+
+    // Identity verification. Both keys go on EVERY session call — the silent
+    // resume as much as the start — because the server checks the claim on
+    // each one, and a resume is what most returning visitors ever send. Blank
+    // values are omitted rather than sent empty: an empty `userId` is no claim.
+    const userId = emptyToUndefined(args.userId?.trim());
+    const userHash = emptyToUndefined(args.userHash?.trim());
+    if (userId != null) body.userId = userId;
+    if (userHash != null) body.userHash = userHash;
 
     const raw = await this.postJson(`${this.base}/${this.slug}/session`, body);
     return parseSessionResult(asRecord(raw));
+  }
+
+  // ── visitor push (Bearer token) ─────────────────────────────────────────
+
+  /**
+   * `POST /:slug/push/register` — the device to notify when an agent replies
+   * and this app is closed.
+   *
+   * Authed by the widget token, and identity comes from it ALONE: the body
+   * carries a push token and a platform, never a tenant, contact or
+   * conversation, so nobody holding a slug can file a device against someone
+   * else's contact. The server upserts by push token, so registering a device
+   * it already knows moves it to this contact rather than failing.
+   */
+  async registerPush(args: RegisterPushArgs): Promise<void> {
+    const body: Record<string, unknown> = {
+      token: args.pushToken,
+      // The server upper-cases it too; done here so a lower-case value never
+      // reaches a log or a test as anything but the canonical spelling.
+      platform: String(args.platform).toUpperCase(),
+    };
+    const locale = emptyToUndefined(args.locale?.trim());
+    if (locale != null) body.locale = locale;
+    const appVersion = emptyToUndefined(args.appVersion?.trim());
+    if (appVersion != null) body.appVersion = appVersion;
+    await this.postJson(`${this.base}/${this.slug}/push/register`, body, args.token);
+  }
+
+  /**
+   * `POST /:slug/push/unregister` — stop notifying this device. Scoped
+   * server-side to the contact the widget token speaks for, so a token can
+   * only silence its own person's device.
+   */
+  async unregisterPush(args: { token: string; pushToken: string }): Promise<void> {
+    await this.postJson(
+      `${this.base}/${this.slug}/push/unregister`,
+      { token: args.pushToken },
+      args.token,
+    );
+  }
+
+  // ── help articles (public, no token) ────────────────────────────────────
+
+  /**
+   * `GET /:slug/help/articles?q=&locale=&category=&limit=` — public.
+   *
+   * A `q` shorter than two characters (or none) lists the top articles in the
+   * workspace's own order; a longer one is a ranked search. The server clamps
+   * `limit` (list: default 20, max 50; search: default 5, max 20). A workspace
+   * with the switch off answers `{ enabled: false }` with nothing in it.
+   */
+  async getHelpArticles(args: HelpListArgs = {}): Promise<HelpArticleList> {
+    const limit =
+      args.limit != null && Number.isFinite(args.limit)
+        ? Math.max(1, Math.trunc(args.limit))
+        : undefined;
+    const raw = await this.getJson(`${this.base}/${this.slug}/help/articles`, {
+      q: emptyToUndefined(args.q?.trim()),
+      // The CONTENT locale — which language's articles to prefer.
+      locale: emptyToUndefined(this.config.contentLocale),
+      category: emptyToUndefined(args.category?.trim()),
+      limit,
+    });
+    return parseHelpArticleList(asRecord(raw));
+  }
+
+  /**
+   * `GET /:slug/help/articles/:id?locale=` — public. A 404 (`NOT_FOUND`) means
+   * the article is unpublished, gone, or the workspace switched help off.
+   */
+  async getHelpArticle(id: string): Promise<HelpArticle> {
+    const raw = await this.getJson(
+      `${this.base}/${this.slug}/help/articles/${encodeURIComponent(id)}`,
+      { locale: emptyToUndefined(this.config.contentLocale) },
+    );
+    const article = asRecord(raw).article;
+    if (article == null || typeof article !== 'object' || Array.isArray(article)) {
+      // A 2xx without the article is a protocol violation, not a crash.
+      throw new EasyLiveChatError(EasyLiveChatErrorCode.UNKNOWN, {
+        message: 'GET /help/articles/:id response missing an `article` object.',
+      });
+    }
+    return parseHelpArticle(article as Record<string, unknown>);
+  }
+
+  /**
+   * `POST /:slug/help/articles/:id/view` — public. Counted once per
+   * `(article, visitorId, sessionId)`; a repeat answers `counted: false`.
+   */
+  async postHelpView(
+    id: string,
+    args: { visitorId: string; sessionId: string },
+  ): Promise<HelpViewResult> {
+    const raw = await this.postJson(
+      `${this.base}/${this.slug}/help/articles/${encodeURIComponent(id)}/view`,
+      { visitorId: args.visitorId, sessionId: args.sessionId },
+    );
+    return { counted: asRecord(raw).counted === true };
+  }
+
+  /**
+   * `POST /:slug/help/articles/:id/feedback` — public. "Was this helpful?";
+   * answering again in the same session changes the answer rather than adding
+   * a second one.
+   */
+  async postHelpFeedback(
+    id: string,
+    args: { visitorId: string; sessionId: string; helpful: boolean },
+  ): Promise<void> {
+    await this.postJson(
+      `${this.base}/${this.slug}/help/articles/${encodeURIComponent(id)}/feedback`,
+      { visitorId: args.visitorId, sessionId: args.sessionId, helpful: args.helpful },
+    );
   }
 
   /**
@@ -225,15 +426,19 @@ export class RestClient {
    * NOTE: this creates an UNRESUMABLE conversation (random `externalId`, no
    * token) — a terminal "we'll get back to you" flow. Never connect a socket
    * after it.
+   *
+   * `consents` works as it does on {@link postSession}.
    */
   async postOfflineForm(args: {
     name?: string;
     email?: string;
     message: string;
+    consents?: readonly string[];
   }): Promise<string> {
     const body: Record<string, unknown> = { message: args.message };
     if (args.name != null) body.name = args.name;
     if (args.email != null) body.email = args.email;
+    Object.assign(body, consentBody(args.consents));
     const raw = await this.postJson(`${this.base}/${this.slug}/offline-form`, body);
     return String(asRecord(raw).conversationId ?? '');
   }

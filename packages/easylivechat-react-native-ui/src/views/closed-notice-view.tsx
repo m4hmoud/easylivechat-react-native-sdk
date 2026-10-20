@@ -24,13 +24,22 @@ function defaultNotice(
   strings: Strings,
   availability: ReturnType<typeof useWorkspaceAvailability>,
 ): string {
-  if (availability.reason === 'NO_AGENTS') return strings.t('noAgentsNotice');
+  // With the assistant answering, "leave a message and we'll reply when we're
+  // back" is untrue — a reply arrives in seconds. The reopening time still
+  // matters: it is when a PERSON is back, so it stays. (False before `boot()`,
+  // so an unbooted notice reads as plainly closed.)
+  const covers = availability.assistantCovers;
+
+  if (availability.reason === 'NO_AGENTS') {
+    return strings.t(covers ? 'noAgentsAssistantNotice' : 'noAgentsNotice');
+  }
 
   // A named closure ("Closed for Eid al-Adha") tells the visitor far more than
   // a generic "we're offline", so prefer it when the server sent one.
   const label = availability.closureLabel;
-  const head =
-    availability.reason === 'HOLIDAY' && label != null && label.length > 0
+  const head = covers
+    ? strings.t('closedAssistantNotice')
+    : availability.reason === 'HOLIDAY' && label != null && label.length > 0
       ? strings.t('closedForLabel').replace('{label}', label)
       : strings.t('closedNotice');
 
@@ -147,7 +156,9 @@ export interface ClosedNoticeBannerProps {
  *
  * The visitor keeps a WORKING composer — their message becomes a PENDING
  * conversation that is auto-assigned when the team comes back — so this sets
- * the expectation about reply time rather than blocking anything.
+ * the expectation about reply time rather than blocking anything. While the AI
+ * assistant covers, it says the assistant can help in the meantime instead,
+ * over the tenant's own copy too.
  */
 export function ClosedNoticeBanner({
   config,
@@ -156,9 +167,11 @@ export function ClosedNoticeBanner({
 }: ClosedNoticeBannerProps): React.JSX.Element {
   const dir = useDirectionStyles();
   const availability = useWorkspaceAvailability();
+  // The tenant's own offline copy is a leave-a-message prompt, and the same
+  // untruth while the assistant covers, so the assistant notice wins then.
   const tenantCopy = config?.offlineMessage.trim() ?? '';
   const message =
-    tenantCopy.length > 0
+    !availability.assistantCovers && tenantCopy.length > 0
       ? substituteVisitorVariables(tenantCopy, {
           name: EasyLiveChat.instance.visitorName,
           defaultName: config?.defaultCustomerName,

@@ -128,6 +128,17 @@ export interface ChatMessage {
   createdAt: Date;
 
   /**
+   * When an agent last changed the words of this message, or undefined when it
+   * reads as first sent.
+   *
+   * An agent may edit (or unsend) a reply for a few minutes after sending it.
+   * The edit arrives as `message:updated` carrying the new {@link body} and
+   * this stamp, and history carries it too, so a reloaded thread still says
+   * "edited". A malformed value is read as undefined rather than guessed at.
+   */
+  editedAt?: Date;
+
+  /**
    * True only for a locally-created optimistic message (id starts `tmp-`),
    * before the server `message:send` ack / echo reconciles it.
    */
@@ -190,6 +201,7 @@ export function parseChatMessage(raw: Record<string, unknown>): ChatMessage {
     // from the socket, where a timestamp means read and null means not.
     readByAgent: raw.read === true || raw.readByAgentAt != null,
     createdAt: parseDate(raw.createdAt ?? raw.created_at),
+    editedAt: parseOptionalDate(raw.editedAt ?? raw.edited_at),
     isOptimistic: false,
     failed: false,
     metadata:
@@ -256,7 +268,24 @@ export function parseDate(v: unknown): Date {
   return new Date(0);
 }
 
+/**
+ * Like {@link parseDate}, but absent and malformed both mean `undefined`: an
+ * optional stamp the server could not give us must not claim the epoch.
+ */
+export function parseOptionalDate(v: unknown): Date | undefined {
+  if (typeof v === 'string') {
+    const ms = Date.parse(v);
+    return Number.isNaN(ms) ? undefined : new Date(ms);
+  }
+  if (typeof v === 'number' && Number.isFinite(v)) return new Date(v);
+  if (v instanceof Date && !Number.isNaN(v.getTime())) return v;
+  return undefined;
+}
+
 // ── derived helpers ───────────────────────────────────────────────────────
+
+/** An agent changed this message after sending it — see `editedAt`. */
+export const isEdited = (m: ChatMessage): boolean => m.editedAt != null;
 
 /** The i18n key of a SYSTEM notice (`conversation.transferred`), or undefined. */
 export function systemI18nKey(m: ChatMessage): string | undefined {
@@ -291,6 +320,22 @@ export function postChatSubmission(m: ChatMessage): Record<string, unknown> | un
 
 export const isFromCustomer = (m: ChatMessage): boolean => m.senderType === 'customer';
 export const isFromAgent = (m: ChatMessage): boolean => m.senderType === 'agent';
+
+/**
+ * Written by the workspace's AI assistant, not a person.
+ *
+ * Say so wherever it is shown: a visitor decides whether to trust an answer,
+ * wait for a person or repeat themselves based on who they think is talking,
+ * and several jurisdictions now require the disclosure outright.
+ *
+ * Read from the server's `metadata.assistant`, which it sets only on replies
+ * the assistant wrote — and only a literal `true` counts. `senderType` alone
+ * cannot tell: the workspace's automatic greeting is a `BOT` message too, and
+ * treating every one as the assistant badged greetings "AI" in workspaces that
+ * never switched the assistant on.
+ */
+export const isFromAssistant = (m: ChatMessage): boolean =>
+  m.senderType === 'bot' && m.metadata?.assistant === true;
 
 /**
  * True while this row still carries its local `tmp-` id — an optimistic send

@@ -142,6 +142,8 @@ class StringsImpl implements Strings {
         return this.t('invalidNumber');
       case 'INVALID_OPTION':
         return this.t('invalidOption');
+      case 'CONSENT_REQUIRED':
+        return this.t('consentRequired');
       case 'INVALID_RATING':
         // The survey's rating field. "Please pick a rating" and "this field is
         // required" are the same instruction to a visitor staring at an unset

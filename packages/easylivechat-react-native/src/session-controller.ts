@@ -5,11 +5,16 @@ import {
   toEasyLiveChatError,
 } from './errors';
 import { Emitter } from './internal/emitter';
+import {
+  type HelpArticle,
+  type HelpArticleList,
+} from './models/help-articles';
 import { isTokenExpiring } from './internal/jwt';
 import { uuidV4 } from './internal/uuid';
 import {
   type ChatMessage,
   isFromAgent,
+  isFromAssistant,
   isFromCustomer,
   isLocalTemp,
   optimisticMessage,
@@ -17,8 +22,13 @@ import {
   systemI18nKey,
   withIdentityFrom,
 } from './models/chat-message';
-import { type PreChatField, validatePreChatField } from './models/pre-chat-form';
 import {
+  type PreChatField,
+  validateConsents,
+  validatePreChatField,
+} from './models/pre-chat-form';
+import {
+  type DeletedMessage,
   type FeedbackResult,
   type MessagePage,
   type ProactiveMessage,
@@ -37,7 +47,7 @@ import {
   isWorkspaceClosed,
 } from './models/widget-config';
 import { PresenceSocket } from './presence-socket';
-import { RestClient, type UploadSource } from './rest-client';
+import { type PushPlatform, RestClient, type UploadSource } from './rest-client';
 import { type Store, createStore } from './store';
 import { type EasyLiveChatStorage, StorageKeys } from './storage';
 import { WidgetSocket } from './widget-socket';
@@ -64,6 +74,68 @@ export interface VisitorIdentity {
   email?: string;
   phone?: string;
   fields?: Record<string, string>;
+  /**
+   * Your application's OWN id for the signed-in user, for identity
+   * verification. Sent on every session call as `userId`.
+   *
+   * Also decides whether this is still the same person on this device: a
+   * DIFFERENT `userId` than last time — or an identity without one after one
+   * was set — starts a new visitor, so the next person never resumes the
+   * previous one's conversation. An anonymous visitor who signs in keeps
+   * their conversation. See `EasyLiveChat.identify`.
+   */
+  userId?: string;
+  /**
+   * `HMAC_SHA256(identitySecret, userId)` as hex, computed by your BACKEND —
+   * the secret must never ship in the app. Sent on every session call as
+   * `userHash`. With verification ENFORCED a missing or wrong hash makes the
+   * session fail with `IDENTITY_NOT_VERIFIED` (see `isIdentityNotVerified`).
+   */
+  userHash?: string;
+}
+
+/**
+ * How a newly declared identity relates to the one this device's visitor was
+ * last identified as.
+ *
+ * - `same` — nothing to do.
+ * - `upgraded` — an anonymous visitor signed in: keep their conversation and
+ *   attach the identity.
+ * - `switched` — a different person, or a signed-in person signed out: the
+ *   stored visitor must not be reused.
+ */
+export type VisitorChange = 'same' | 'upgraded' | 'switched';
+
+/**
+ * The person-change rule, shared with the web widget (`reconcileVisitor`).
+ *
+ * `stored` is the user id the device's visitor was last identified as, `next`
+ * the one now declared; null means anonymous.
+ */
+export function visitorChangeFor(stored: string | null, next: string | null): VisitorChange {
+  if (next != null && stored === next) return 'same';
+  if (next == null && stored == null) return 'same';
+  if (next != null && stored == null) return 'upgraded';
+  return 'switched';
+}
+
+function cleanClaim(v: string | undefined): string | undefined {
+  if (v == null) return undefined;
+  const t = v.trim();
+  return t.length > 0 ? t : undefined;
+}
+
+/**
+ * What the pre-chat form captured: the identity and field values, plus the
+ * consent checkboxes the visitor ticked.
+ */
+export interface PreChatSubmission extends VisitorIdentity {
+  /**
+   * The ids of the consent fields the visitor ticked. Consent is not a value,
+   * so it never goes in `fields`. Only matters with
+   * {@link SessionController.supportsConsent} on.
+   */
+  consents?: readonly string[];
 }
 
 /** The marker whose i18n key opens a new visit inside an existing thread. */
@@ -74,6 +146,13 @@ const MAX_BACKFILL_PAGES = 20;
 
 /** The server only ever sends `isTyping: true`; clear it ourselves after this. */
 const TYPING_AUTO_CLEAR_MS = 4000;
+
+/**
+ * The assistant's typing has no short clear: it sends an explicit stop when
+ * its reply is ready, and a reply can take ten seconds or more. This is only
+ * the backstop for a stop lost to a dropped connection.
+ */
+const ASSISTANT_TYPING_BACKSTOP_MS = 45_000;
 
 /**
  * React Native defines `__DEV__`; Node/Vitest define `process.env.NODE_ENV`.
@@ -143,6 +222,20 @@ export class SessionController {
     Object.freeze([]) as readonly ChatMessage[],
   );
   readonly agentTyping: Store<boolean> = createStore(false);
+
+  /**
+   * True while the typing shown in {@link agentTyping} is the AI assistant
+   * composing a reply, so the UI can say "Assistant is typing" rather than
+   * implying a person is there. `agentTyping` is true alongside it.
+   */
+  readonly assistantTyping: Store<boolean> = createStore(false);
+
+  /**
+   * Whether the AI assistant answers a message sent right now. Bind it to
+   * replace "we're offline, leave a message" with "our assistant can help in
+   * the meantime" — the first is untrue while the assistant is answering.
+   */
+  readonly assistantCovers: Store<boolean> = createStore(false);
   readonly unreadCount: Store<number> = createStore(0);
 
   /**
@@ -158,11 +251,17 @@ export class SessionController {
   readonly agentLastReadAt: Store<Date | null> = createStore<Date | null>(null);
 
   private readonly messageEmitter = new Emitter<ChatMessage>();
+  private readonly deletedEmitter = new Emitter<DeletedMessage>();
   private readonly proactiveEmitter = new Emitter<ProactiveMessage>();
   private readonly errorEmitter = new Emitter<EasyLiveChatError>();
 
   onMessage(fn: (m: ChatMessage) => void): () => void {
     return this.messageEmitter.subscribe(fn);
+  }
+
+  /** A message an agent unsent, once per id — see `EasyLiveChat.onMessageDeleted`. */
+  onMessageDeleted(fn: (d: DeletedMessage) => void): () => void {
+    return this.deletedEmitter.subscribe(fn);
   }
 
   onProactiveMessage(fn: (p: ProactiveMessage) => void): () => void {
@@ -200,6 +299,89 @@ export class SessionController {
   private phone?: string;
   private identityFields?: Record<string, string>;
 
+  /**
+   * The identity-verification claim declared for THIS controller — sent on
+   * every session call. Never persisted: the hash is the host backend's to
+   * hand over each launch.
+   */
+  private claimUserId?: string;
+  private claimUserHash?: string;
+
+  /**
+   * The user id this device's visitor was last identified as, mirrored from
+   * `StorageKeys.identifiedUserId`. Updated in memory the moment a decision is
+   * made, so a second identify() in the same tick is judged against the first.
+   */
+  private storedUserId: string | null = null;
+
+  /**
+   * Whether this controller has lined the stored visitor up with the declared
+   * identity yet. `identify()` does it; otherwise the first session call does,
+   * as "nobody is signed in" — the same moment the web widget reconciles, its
+   * boot. See {@link settleIdentity}.
+   */
+  private identitySettled = false;
+
+  /**
+   * Storage work an identity change queued (forgetting the old visitor,
+   * recording the new user id). Every session call waits for it, so a request
+   * can never go out under a visitor id that is being forgotten.
+   */
+  private identityChain: Promise<void> = Promise.resolve();
+
+  /**
+   * Bumped whenever the visitor is switched. A session request that was in
+   * flight across a switch belongs to the previous person, and its answer is
+   * dropped rather than adopted.
+   */
+  private identityEpoch = 0;
+
+  /** Set once {@link boot} has read storage — see {@link pendingIdentityOp}. */
+  private booted = false;
+
+  /**
+   * An identify()/clearIdentity() that arrived before {@link boot} finished,
+   * applied as its last step.
+   *
+   * Both are judged against the user id {@link boot} reads back from storage.
+   * Applied before that read — the ordinary `void boot(); identify(…)` with
+   * nothing awaited — a returning user looked anonymous: a DIFFERENT person
+   * was then "an anonymous visitor signing in" and resumed the last one's
+   * conversation, and boot's own profile read clobbered the identity just
+   * declared. Only the latest call matters, as with the host's own state.
+   */
+  private pendingIdentityOp: (() => void) | null = null;
+
+  // ── visitor push ──
+  //
+  // The device token the host handed over, and the one the server currently
+  // has on file for this visitor. They differ while a registration is held
+  // (no session token to authenticate it yet) or in flight — exactly the
+  // window the queue exists for.
+  private pushToken: string | null = null;
+  private pushPlatform: PushPlatform | null = null;
+  private pushAppVersion: string | undefined;
+  private registeredPushToken: string | null = null;
+
+  /**
+   * Register/unregister calls, one at a time and in order. A rotation is an
+   * unregister then a register, and two rotations in quick succession must not
+   * interleave into a dead row that keeps receiving this person's replies.
+   * Never rejects.
+   */
+  private pushChain: Promise<void> = Promise.resolve();
+
+  /**
+   * The running {@link open}, and the identity epoch it runs under. A second
+   * call joins it — two overlapping opens would each find nothing to resume
+   * and start two sessions — unless the visitor was switched since, in which
+   * case that open belongs to the previous person and bails out by itself.
+   */
+  private openInFlight: { run: Promise<void>; epoch: number } | null = null;
+
+  /** One random id per controller, for the help-article view/feedback counts. */
+  private helpSessionIdValue: string | null = null;
+
   private token: string | null = null;
   private conversationIdValue: string | null = null;
 
@@ -224,6 +406,22 @@ export class SessionController {
 
   private socket: WidgetSocket | null = null;
   private presence: PresenceSocket | null = null;
+
+  /**
+   * Messages an agent unsent while this controller was listening.
+   *
+   * Remembered so nothing brings one back: a `message:updated` for it (the
+   * visitor's own read receipt fans one out seconds after a reply lands, and it
+   * travels a slower path than the delete), or a backfill page fetched just
+   * before it went. Ids are never reused, so the set needs no expiry.
+   */
+  private readonly unsentIds = new Set<string>();
+
+  /**
+   * Agent replies counted in {@link unreadCount} since the visitor last looked,
+   * so one unsent before they did can be taken back off the badge.
+   */
+  private readonly unreadIds = new Set<string>();
 
   /**
    * True once the chat socket has connected at least once this session — used
@@ -265,6 +463,20 @@ export class SessionController {
   private sessionMarkerId: string | null = null;
 
   private disposed = false;
+
+  /**
+   * Whether this client draws the workspace's consent checkboxes — see
+   * `EasyLiveChat.supportsConsent`. Read at each config fetch.
+   */
+  supportsConsent = false;
+
+  /**
+   * Whether the config in {@link widgetConfig} was asked for WITH consent
+   * fields. Only then can the visitor have been shown them, so only then does
+   * a new chat declare the capability — declaring it over a form fetched
+   * without would make the server demand boxes nobody drew.
+   */
+  private configHasConsent = false;
 
   // ── accessors ───────────────────────────────────────────────────────────
 
@@ -369,6 +581,9 @@ export class SessionController {
     }
     this.visitorIdValue = vid;
 
+    const storedUser = await this.storage.read(StorageKeys.identifiedUserId);
+    this.storedUserId = storedUser != null && storedUser.trim().length > 0 ? storedUser : null;
+
     const rawProfile = await this.storage.read(StorageKeys.profile);
     if (rawProfile != null && rawProfile.length > 0) {
       try {
@@ -383,6 +598,11 @@ export class SessionController {
         // Corrupt cache — treat as no profile.
       }
     }
+
+    this.booted = true;
+    const pending = this.pendingIdentityOp;
+    this.pendingIdentityOp = null;
+    pending?.();
   }
 
   /**
@@ -395,14 +615,52 @@ export class SessionController {
    * full visitor identity for this session, so a value it no longer supplies
    * (an email, say) must be CLEARED — otherwise an old, or a previous user's,
    * email leaks into the new session out of secure storage.
+   *
+   * `userId` + `userHash` are the identity-verification claim, sent on every
+   * session call from now on. The `userId` is also compared with the one this
+   * device's visitor was last identified as ({@link visitorChangeFor}):
+   *
+   * - anonymous → identified keeps the visitor, so the conversation they are
+   *   in continues with the identity attached (re-sent at once when a session
+   *   is live);
+   * - a DIFFERENT `userId`, or an identity WITHOUT one after one was set —
+   *   including an otherwise empty identity, which then means "signed out" —
+   *   forgets the stored visitor (id, profile, token) and continues as a new
+   *   one. A live session is torn down, and the chat re-opens as the new
+   *   person if it was open.
+   *
+   * The `userId` survives restarts (`StorageKeys.identifiedUserId`); the hash
+   * does not, so call this on every launch BEFORE `open()`. A session that
+   * starts with no identify() behind it while a
+   * `userId` is on record is treated as signed out, exactly as the web widget
+   * treats a page that boots without an identity.
+   *
+   * Called before {@link boot} has finished, it is held and applied by boot,
+   * once the stored user id it is judged against has been read.
    */
   identify(identity: VisitorIdentity): void {
+    if (!this.booted) {
+      this.pendingIdentityOp = () => this.identify(identity);
+      return;
+    }
+    const userId = cleanClaim(identity.userId);
+    const userHash = cleanClaim(identity.userHash);
     const hasAny =
       (identity.name != null && identity.name.trim().length > 0) ||
       (identity.email != null && identity.email.trim().length > 0) ||
       (identity.phone != null && identity.phone.trim().length > 0) ||
-      (identity.fields != null && Object.keys(identity.fields).length > 0);
-    if (!hasAny) return;
+      (identity.fields != null && Object.keys(identity.fields).length > 0) ||
+      userId != null;
+    if (!hasAny) {
+      // Ignored as before — unless a verified user is on record, in which case
+      // an empty identity is that person signing out.
+      if (this.claimUserId == null && this.storedUserId == null) return;
+      if (this.declareClaim(undefined, undefined, { reopen: true })) this.reopenAfterSwitch();
+      return;
+    }
+    // First, because a switch clears the previous person's identity — and must
+    // not clear the one being declared now.
+    const reopen = this.declareClaim(userId, userHash, { reopen: true });
     this.hasIdentity = true;
     this.identityName = identity.name;
     this.identityEmail = identity.email;
@@ -414,6 +672,201 @@ export class SessionController {
       phone: identity.phone,
       preChat: identity.fields,
     };
+    // After the new identity is in place, so the re-open starts as this person.
+    if (reopen) this.reopenAfterSwitch();
+  }
+
+  /**
+   * Declare that nobody is signed in any more, without tearing the SDK down.
+   *
+   * Drops the identity passed to {@link identify} — name, email, phone, fields
+   * and the verification claim — and the cached profile, in memory and in
+   * storage. That is the whole job for a visitor never identified with a
+   * `userId`: they keep their visitorId and conversation, as an anonymous
+   * visitor would, which is what a name/email-only host needs when its user
+   * signs out and `reset()` would be too much.
+   *
+   * When this device's visitor WAS identified with a `userId`, the visitor is
+   * forgotten as well — a fresh visitorId, no conversation to resume, the
+   * previous person's push registration dropped — because the next person to
+   * open the chat may be someone else ({@link visitorChangeFor}); a chat on
+   * screen restarts as an anonymous visitor. `EasyLiveChat.reset()` remains
+   * the full logout that also abandons the visitorId in every case.
+   *
+   * Held until {@link boot} has finished, like identify().
+   */
+  clearIdentity(): void {
+    if (!this.booted) {
+      this.pendingIdentityOp = () => this.clearIdentity();
+      return;
+    }
+    this.hasIdentity = false;
+    this.identityName = undefined;
+    this.identityEmail = undefined;
+    this.phone = undefined;
+    this.identityFields = undefined;
+    this.profile = null;
+    // Otherwise the next cold start reads it back and the signed-out person's
+    // name rides along on the next resume.
+    this.enqueueStorage(() => this.storage.delete(StorageKeys.profile));
+    if (this.declareClaim(undefined, undefined, { reopen: true })) this.reopenAfterSwitch();
+  }
+
+  // ── identity verification + the person-change rule ─────────────────────
+
+  /**
+   * Adopt `userId`/`userHash` as this controller's claim and line the stored
+   * visitor up with it ({@link visitorChangeFor}).
+   *
+   * Returns true when the visitor was switched out of a chat that was open and
+   * `reopen` was asked for — the caller re-opens once the new identity is in
+   * place, so the chat comes back as the new person rather than going blank.
+   */
+  private declareClaim(
+    userId: string | undefined,
+    userHash: string | undefined,
+    options: { reopen: boolean },
+  ): boolean {
+    this.identitySettled = true;
+    const next = userId ?? null;
+    const change = visitorChangeFor(this.storedUserId, next);
+    this.claimUserId = userId;
+    this.claimUserHash = userId != null ? userHash : undefined;
+    if (change === 'same') return false;
+
+    this.storedUserId = next;
+    if (change === 'upgraded') {
+      // The same visitor, now known: their conversation continues.
+      this.enqueueStorage(() => this.storage.write(StorageKeys.identifiedUserId, next as string));
+      // Attach the identity to a conversation already under way NOW, not at
+      // the next token re-mint hours later — a resume carries the claim.
+      if (this.token != null) void this.identityChain.then(() => this.remintToken());
+      return false;
+    }
+
+    const wasOpen = this.switchVisitor();
+    // After the forget switchVisitor queued: a crash between the two can only
+    // lose the old visitor, never hand them to the new person.
+    this.enqueueStorage(() =>
+      next != null
+        ? this.storage.write(StorageKeys.identifiedUserId, next)
+        : this.storage.delete(StorageKeys.identifiedUserId),
+    );
+    return options.reopen && wasOpen;
+  }
+
+  /**
+   * A different person: drop everything the previous one left in memory and
+   * continue as a brand-new visitor.
+   *
+   * Without this, a second person signing in on the same device opened the
+   * first person's conversation — and, once the assistant can look up account
+   * data, would be answered about the first person's account.
+   *
+   * Returns whether a chat was open (any phase but idle).
+   */
+  private switchVisitor(): boolean {
+    this.identityEpoch++;
+    const wasOpen = this.phase.get() !== 'idle';
+
+    // Stop the previous person's replies notifying this device. The next
+    // registration would move the device anyway (the server upserts by push
+    // token), but only once the new person opens a chat — until then the lock
+    // screen would keep showing someone else's conversation. Captured before
+    // the session is dropped below; the device token itself stays, it is the
+    // device's and the new person's session registers it again.
+    const stalePush = this.registeredPushToken ?? this.pushToken;
+    const staleToken = this.token;
+    this.registeredPushToken = null;
+    if (stalePush != null) {
+      // Queued AHEAD of the forget below: on a cold start the only copy of the
+      // previous person's widget token is the stored one.
+      this.enqueueStorage(async () => {
+        const token = staleToken ?? (await this.readStoredToken());
+        if (token != null) this.unregisterPushBestEffort(token, stalePush);
+      });
+    }
+
+    this.stopHeartbeat();
+    this.teardownSocket();
+    this.teardownPresence();
+    if (this.typingTimer != null) clearTimeout(this.typingTimer);
+    this.typingTimer = null;
+
+    this.token = null;
+    this.conversationIdValue = null;
+    this.socketConversationId = null;
+    this.oldestCursor = null;
+    this.historyLoadedOnce = false;
+    this.sessionMarkerId = null;
+    this.closedHandled.clear();
+    this.ratedConversations.clear();
+    this.unreadIds.clear();
+    this.messages.set(Object.freeze([]) as readonly ChatMessage[]);
+    this.unreadCount.set(0);
+    this.agentTyping.set(false);
+    this.assistantTyping.set(false);
+    this.agentLastReadAt.set(null);
+    this.connection.set('disconnected');
+
+    // The previous person's identity goes with them.
+    this.hasIdentity = false;
+    this.identityName = undefined;
+    this.identityEmail = undefined;
+    this.phone = undefined;
+    this.identityFields = undefined;
+    this.profile = null;
+
+    const vid = uuidV4();
+    this.visitorIdValue = vid;
+    // Nothing can be resumed under an id that did not exist a moment ago.
+    this.freshVisitor = true;
+    this.enqueueStorage(async () => {
+      for (const key of StorageKeys.identity) await this.storage.delete(key);
+      await this.storage.write(StorageKeys.visitorId, vid);
+    });
+
+    if (wasOpen) this.setPhase('idle');
+    return wasOpen;
+  }
+
+  /** Re-run the open flow as the visitor who just replaced the last one. */
+  private reopenAfterSwitch(): void {
+    if (this.disposed) return;
+    this.open().catch((e: unknown) => this.emitError(e));
+  }
+
+  /** Queue identity storage work. The chain never rejects. */
+  private enqueueStorage(op: () => Promise<void>): void {
+    this.identityChain = this.identityChain.then(op).catch(() => {
+      // Storage refused. Nothing persisted, but memory already holds the right
+      // visitor for this session — the same trade the web widget makes.
+    });
+  }
+
+  /**
+   * Make sure the stored visitor has been lined up with the declared identity
+   * before anything uses the visitor id, then wait for the storage work.
+   *
+   * When identify() was never called on this controller, "nobody is signed
+   * in" is what was declared: a `userId` still on record from an earlier
+   * launch then means its person signed out, and their visitor is forgotten.
+   */
+  private settleIdentity(): Promise<void> {
+    if (!this.identitySettled) {
+      this.identitySettled = true;
+      if (this.storedUserId != null) this.declareClaim(undefined, undefined, { reopen: false });
+    }
+    return this.identityChain;
+  }
+
+  /**
+   * True while a signed-in visitor is on record and nobody has said yet
+   * whether they are still the one using the app. Background traffic keyed on
+   * the visitor id (heartbeat, presence) waits until then.
+   */
+  private get identityPending(): boolean {
+    return !this.identitySettled && this.storedUserId != null;
   }
 
   /**
@@ -428,7 +881,9 @@ export class SessionController {
    */
   async loadConfig(): Promise<WidgetConfig> {
     this.setPhase('loading');
-    const res = await this.guardAuth(() => this.rest.getConfig());
+    const askConsent = this.supportsConsent;
+    const res = await this.guardAuth(() => this.rest.getConfig({ consent: askConsent }));
+    this.configHasConsent = askConsent;
     this.widgetConfig.set(res.config);
     this.isOpen.set(res.isOpen);
     this.agentsAccepting.set(res.agentsAccepting);
@@ -442,6 +897,7 @@ export class SessionController {
     this.closureLabel.set(res.closureLabel ?? null);
     this.nextOpenLocal.set(res.nextOpenLocal ?? null);
     this.workspaceTimezone.set(res.timezone ?? null);
+    this.assistantCovers.set(res.assistantCovers);
     return res.config;
   }
 
@@ -462,8 +918,36 @@ export class SessionController {
    * config is {@link idlePhase}, and `open` sets the final phase itself
    * afterwards regardless. On a genuine first open the resume is skipped
    * outright (see {@link freshVisitor}), which takes the tap down to one.
+   *
+   * SINGLE-FLIGHT: a call while one is running joins it. Two overlapping runs
+   * — the host opening the chat while an identity change re-opens it, or a
+   * launcher and a deep link both calling it — would each find nothing to
+   * resume and start two sessions. The one exception is a run that began
+   * before the visitor was switched: it belongs to the previous person and
+   * bails out at its next epoch check, so the new person gets a run of their
+   * own rather than joining one that will do nothing for them.
    */
-  async open(): Promise<void> {
+  open(): Promise<void> {
+    const inflight = this.openInFlight;
+    if (inflight != null && inflight.epoch === this.identityEpoch) return inflight.run;
+    // Read the epoch AFTER starting: the run settles the identity synchronously
+    // before its first await, and a switch it makes there is its own.
+    const run = this.openImpl();
+    const entry = { run, epoch: this.identityEpoch };
+    this.openInFlight = entry;
+    const clear = (): void => {
+      if (this.openInFlight === entry) this.openInFlight = null;
+    };
+    run.then(clear, clear);
+    return run;
+  }
+
+  private async openImpl(): Promise<void> {
+    // Line the stored visitor up with whoever is (or is not) signed in before
+    // anything reads the visitor id.
+    await this.settleIdentity();
+    const epoch = this.identityEpoch;
+
     // Both started BEFORE either is awaited, so the requests overlap. Config
     // goes first so it is the one that sets `loading`, and because it is the
     // one the first paint is actually waiting on. `silentResume` resolves
@@ -473,6 +957,9 @@ export class SessionController {
     const resuming = this.freshVisitor ? Promise.resolve(false) : this.silentResume();
 
     const cfg = await loading;
+    // The visitor changed while the config loaded; that switch re-opens as the
+    // new person, and this open belongs to the previous one.
+    if (epoch !== this.identityEpoch) return;
 
     // The receive-only presence socket, for pre-chat proactive outreach.
     if (this.config.enablePresenceSocket) this.connectPresence();
@@ -491,7 +978,7 @@ export class SessionController {
     }
 
     const resumed = await resuming;
-    if (resumed) return;
+    if (resumed || epoch !== this.identityEpoch) return;
 
     if (this.hasIdentity) {
       // Known (logged-in) visitor: skip the pre-chat form and start directly
@@ -528,8 +1015,10 @@ export class SessionController {
   async refreshAvailability(): Promise<void> {
     if (this.disposed) return;
     try {
-      const res = await this.rest.getConfig();
+      const askConsent = this.supportsConsent;
+      const res = await this.rest.getConfig({ consent: askConsent });
       if (this.disposed) return;
+      this.configHasConsent = askConsent;
       this.widgetConfig.set(res.config);
       this.isOpen.set(res.isOpen);
       this.agentsAccepting.set(res.agentsAccepting);
@@ -539,6 +1028,7 @@ export class SessionController {
       this.closureLabel.set(res.closureLabel ?? null);
       this.nextOpenLocal.set(res.nextOpenLocal ?? null);
       this.workspaceTimezone.set(res.timezone ?? null);
+      this.assistantCovers.set(res.assistantCovers);
       this.chatAvailabilityMode = res.chatAvailabilityMode;
       this.asyncEnabled = res.asyncEnabled;
 
@@ -577,12 +1067,16 @@ export class SessionController {
   }
 
   private async silentResumeImpl(): Promise<boolean> {
+    await this.settleIdentity();
+    const epoch = this.identityEpoch;
     this.setPhase('resuming');
     let res: SessionResult;
     try {
       res = await this.guardAuth(() =>
         this.rest.postSession({
           visitorId: this.visitorId,
+          userId: this.claimUserId,
+          userHash: this.claimUserHash,
           name: this.profile?.name,
           email: this.profile?.email,
           // The resume path MUST send the phone. The create path always did;
@@ -597,10 +1091,14 @@ export class SessionController {
         }),
       );
     } catch (e) {
+      if (epoch !== this.identityEpoch) return false;
       this.emitError(e);
       this.setPhase(this.idlePhase());
       return false;
     }
+
+    // Asked as the previous person; the switch re-opens as the new one.
+    if (epoch !== this.identityEpoch) return false;
 
     if (res.hasActiveConversation && res.token != null) {
       await this.adoptSession(res);
@@ -624,11 +1122,31 @@ export class SessionController {
    *
    * Validates client-side for UX; the server's `400 { fieldId }` stays the
    * authority. Persists the (possibly enriched) profile, then adopts.
+   *
+   * `consents` are the ids of the consent fields the visitor ticked. They are
+   * sent — with the `consent` capability — whenever the form the visitor
+   * filled in could have shown consent fields: it is enabled and was fetched
+   * with {@link supportsConsent} on. Unset then means none ticked, so a
+   * required one fails here with `CONSENT_REQUIRED` before the server says the
+   * same. Otherwise nothing about consent is sent and the server asks for
+   * none: a host-identified visitor (`skipValidation`) never saw a form, and
+   * an anonymous start has no form to see.
    */
   async startSession(
-    identity: VisitorIdentity = {},
+    identity: PreChatSubmission = {},
     options: { skipValidation?: boolean } = {},
   ): Promise<void> {
+    // A claim passed here is declared just as identify() would declare it;
+    // without one, the claim identify() set stands (this call merges, it does
+    // not replace).
+    const claimedId = cleanClaim(identity.userId);
+    const claimedHash = cleanClaim(identity.userHash);
+    if (claimedId != null && (claimedId !== this.claimUserId || claimedHash !== this.claimUserHash)) {
+      this.declareClaim(claimedId, claimedHash, { reopen: false });
+    }
+    await this.settleIdentity();
+    const epoch = this.identityEpoch;
+
     const cfg = this.widgetConfig.get();
     const fields = identity.fields;
     if (
@@ -644,6 +1162,20 @@ export class SessionController {
         }
       }
     }
+    // After the values, as the server checks them.
+    const consents =
+      options.skipValidation !== true &&
+      this.configHasConsent &&
+      cfg != null &&
+      cfg.preChatForm.enabled
+        ? [...(identity.consents ?? [])]
+        : undefined;
+    if (consents != null && cfg != null) {
+      const check = validateConsents(cfg.preChatForm, consents);
+      if (!check.ok) {
+        throw this.surface(new EasyLiveChatError(check.error, { fieldId: check.fieldId }));
+      }
+    }
 
     this.setPhase('loading');
     let res: SessionResult;
@@ -651,17 +1183,26 @@ export class SessionController {
       res = await this.guardAuth(() =>
         this.rest.postSession({
           visitorId: this.visitorId,
+          userId: this.claimUserId,
+          userHash: this.claimUserHash,
           name: identity.name ?? this.profile?.name,
           email: identity.email ?? this.profile?.email,
           phone: identity.phone ?? this.phone ?? this.profile?.phone,
           locale: this.effectiveLocale,
           fields,
+          consents,
         }),
       );
     } catch (e) {
-      this.setPhase(cfg?.preChatForm.enabled === true ? 'prechat' : 'idle');
+      if (epoch === this.identityEpoch) {
+        this.setPhase(cfg?.preChatForm.enabled === true ? 'prechat' : 'idle');
+      }
       throw this.surface(e);
     }
+
+    // Started as the previous person — neither their profile nor their
+    // session may land on the new visitor.
+    if (epoch !== this.identityEpoch) return;
 
     // Persist the (possibly enriched) profile for future silent-resume calls.
     // `phone` is included deliberately: the Flutter reference drops it here,
@@ -696,12 +1237,16 @@ export class SessionController {
       await this.storage.write(StorageKeys.conversationId, res.conversationId);
     }
 
+    // A push registration held for want of a session token can go now.
+    void this.syncPush();
+
     // Cleared BEFORE the seed, not after: the watermark only ever moves
     // forward, so one carried over from a previous conversation would outrank
     // anything this thread's history has to say and show its first messages as
     // already read.
     this.agentLastReadAt.set(null);
-    this.setMessages(dedupSort(res.messages));
+    this.forgetUnsent(res.unsentIds, res.conversationId);
+    this.setMessages(dedupSort(res.messages.filter((m) => !this.unsentIds.has(m.id))));
     this.connectSocket();
     // Presence (`/widget-presence`) is the PRE-chat proactive channel. Once
     // the full chat socket is up, `/widgets` delivers proactive too — keeping
@@ -730,7 +1275,10 @@ export class SessionController {
    * between emit and ack yields a terminal failure (the bubble flips to
    * *failed*, tap-to-retry) instead of hanging forever.
    */
-  sendMessage(body: string, options: { attachmentUrls?: string[] } = {}): SendResult {
+  sendMessage(
+    body: string,
+    options: { attachmentUrls?: string[]; reply?: { messageId: string; buttonId: string } } = {},
+  ): SendResult {
     const attachmentUrls = options.attachmentUrls ?? [];
     const tempId = `tmp-${uuidV4()}`;
     const optimistic = optimisticMessage({
@@ -753,7 +1301,7 @@ export class SessionController {
     }
 
     const serverMessageId = socket
-      .sendMessage({ body, attachmentUrls })
+      .sendMessage({ body, attachmentUrls, reply: options.reply })
       .then((ack) => {
         if (!ack.ok) {
           this.failOptimistic(tempId);
@@ -843,19 +1391,20 @@ export class SessionController {
   /** Page older history via `GET /messages?cursor=` (walks backward in time). */
   async loadOlderMessages(): Promise<MessagePage> {
     const token = this.token;
-    if (token == null) return { messages: [], nextCursor: null };
+    if (token == null) return { messages: [], nextCursor: null, unsentIds: [] };
     // A null cursor after a load means the session payload already reached the
     // start of the conversation. Passing it to the API would re-fetch the
     // NEWEST page instead — harmless (the merge dedupes) but a wasted round
     // trip on every short thread, and it happens unprompted now that loading
     // is automatic.
     if (this.oldestCursor == null && this.historyLoadedOnce) {
-      return { messages: [], nextCursor: null };
+      return { messages: [], nextCursor: null, unsentIds: [] };
     }
     this.historyLoadedOnce = true;
     const page = await this.guardAuth(() =>
       this.rest.getMessages({ token, cursor: this.oldestCursor, limit: 50 }),
     );
+    this.forgetUnsent(page.unsentIds);
     if (page.messages.length > 0) this.mergeMessages(page.messages);
     this.oldestCursor = page.nextCursor;
     return page;
@@ -870,6 +1419,7 @@ export class SessionController {
    * server throttles and no-ops once the thread is fully read.
    */
   markRead(): void {
+    this.unreadIds.clear();
     if (this.unreadCount.get() !== 0) this.unreadCount.set(0);
     this.socket?.reportSeen();
   }
@@ -912,16 +1462,34 @@ export class SessionController {
    *
    * Creates an UNRESUMABLE conversation (random externalId, no token). Never
    * connect a socket after it.
+   *
+   * `consents` are the consent fields the visitor ticked on the form shown
+   * beside it. Passing them (even `[]`) declares the `consent` capability, so
+   * the server holds the submission to the required ones — checked here
+   * first, `CONSENT_REQUIRED` + `fieldId`. They are sent only when the config
+   * was fetched with {@link supportsConsent}, since otherwise no consent field
+   * can have been on screen. Unset sends nothing about consent.
    */
   async submitOfflineForm(args: {
     name?: string;
     email?: string;
     message: string;
+    consents?: readonly string[];
   }): Promise<string> {
+    const consents =
+      args.consents != null && this.configHasConsent ? [...args.consents] : undefined;
+    const cfg = this.widgetConfig.get();
+    if (consents != null && cfg != null) {
+      const check = validateConsents(cfg.preChatForm, consents);
+      if (!check.ok) {
+        throw new EasyLiveChatError(check.error, { fieldId: check.fieldId });
+      }
+    }
     return this.rest.postOfflineForm({
       name: args.name ?? this.profile?.name,
       email: args.email ?? this.profile?.email,
       message: args.message,
+      consents,
     });
   }
 
@@ -1034,10 +1602,186 @@ export class SessionController {
    *
    * The transcript is NOT deleted — this abandons the identity, not the
    * history.
+   *
+   * The device's push registration for this visitor is dropped too, or the
+   * signed-out person's replies would keep lighting up a lock screen that is
+   * now somebody else's. Fire-and-forget, so a logout on a dead network is not
+   * held up by it; the token is read before the keys go.
    */
   async resetVisitor(): Promise<void> {
+    const stalePush = this.registeredPushToken ?? this.pushToken;
+    this.registeredPushToken = null;
+    if (stalePush != null) {
+      const token = this.token ?? (await this.readStoredToken());
+      if (token != null) this.unregisterPushBestEffort(token, stalePush);
+    }
     for (const key of StorageKeys.identity) {
       await this.storage.delete(key);
+    }
+  }
+
+  // ── visitor push ────────────────────────────────────────────────────────
+
+  /**
+   * The device to notify when an agent replies and this app is closed.
+   *
+   * Call it as soon as the push SDK hands over a token — before a chat exists
+   * is fine, and is the common case. There is no session token to
+   * authenticate a registration with until the visitor opens a conversation,
+   * so it is HELD and sent the moment there is one (every session adoption
+   * and token re-mint retries it, so a registration that failed is not lost
+   * either).
+   *
+   * Calling it again with a different token MOVES the registration: the old
+   * one is dropped first, so a token rotation cannot leave a dead row behind
+   * that keeps receiving this person's replies. `null` unregisters. Resolves
+   * once the call has gone out (or been held); never rejects — a visitor who
+   * misses a notification is a smaller failure than a chat that cannot open
+   * because registering threw.
+   */
+  async setPushToken(
+    pushToken: string | null,
+    options: { platform: PushPlatform; appVersion?: string },
+  ): Promise<void> {
+    const next = pushToken == null ? null : pushToken.trim();
+    if (next != null && next.length === 0) return;
+    if (next === this.pushToken && next === this.registeredPushToken) return;
+    this.pushToken = next;
+    // The platform describes a token being registered; `null` keeps the last.
+    if (next != null) {
+      this.pushPlatform = options.platform;
+      this.pushAppVersion = options.appVersion;
+    }
+    await this.syncPush();
+  }
+
+  /**
+   * Bring the server's registration in line with {@link pushToken}: drop a
+   * registration for any other token, then register this one if a session
+   * token can authenticate it. Queued on {@link pushChain}, and decided when
+   * it RUNS rather than when it was asked for, so a burst of rotations
+   * collapses into the right end state.
+   */
+  private syncPush(): Promise<void> {
+    const run = this.pushChain.then(() => this.syncPushNow());
+    this.pushChain = run.catch(() => {
+      // Never poisons the chain; each step already swallows its own failure.
+    });
+    return this.pushChain;
+  }
+
+  private async syncPushNow(): Promise<void> {
+    if (this.disposed) return;
+    const desired = this.pushToken;
+    const registered = this.registeredPushToken;
+    if (registered != null && registered !== desired) {
+      this.registeredPushToken = null;
+      const token = this.token;
+      if (token != null) {
+        try {
+          await this.rest.unregisterPush({ token, pushToken: registered });
+        } catch {
+          // Best effort. The server prunes a token FCM reports as dead anyway.
+        }
+      }
+    }
+    if (desired == null || this.registeredPushToken === desired) return;
+    const token = this.token;
+    const platform = this.pushPlatform;
+    if (token == null || platform == null) return; // Held until a session exists.
+    const epoch = this.identityEpoch;
+    try {
+      await this.rest.registerPush({
+        token,
+        pushToken: desired,
+        platform,
+        // The language the server writes its own wording in ("Sent a photo"):
+        // the content-locale CODE, since `locale` may be a display name the
+        // server cannot match.
+        locale: this.config.contentLocale ?? this.config.locale,
+        appVersion: this.pushAppVersion,
+      });
+      // Registered under the person whose session token it carried. After a
+      // switch that is no longer this visitor, and the new one registers anew.
+      if (epoch === this.identityEpoch) this.registeredPushToken = desired;
+    } catch {
+      // Left queued: the next session adoption tries again.
+    }
+  }
+
+  /** Fire-and-forget unregister, for paths that must not wait on the network. */
+  private unregisterPushBestEffort(token: string, pushToken: string): void {
+    this.rest.unregisterPush({ token, pushToken }).catch(() => {
+      // Best effort — see syncPushNow.
+    });
+  }
+
+  /** The widget token a previous launch left in storage, if any. */
+  private async readStoredToken(): Promise<string | null> {
+    try {
+      const t = await this.storage.read(StorageKeys.token);
+      return t != null && t.length > 0 ? t : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ── help articles ───────────────────────────────────────────────────────
+
+  /**
+   * One random id per controller (per `boot()`), sent with article views and
+   * "was this helpful?" answers. The server counts a view once per
+   * `(article, visitor, session)`, and an answer given twice in one session
+   * changes the first rather than adding a second.
+   */
+  get helpSessionId(): string {
+    this.helpSessionIdValue ??= uuidV4();
+    return this.helpSessionIdValue;
+  }
+
+  /**
+   * `GET /help/articles`. A query of two or more characters is a ranked
+   * search (default 5 results, at most 20); a shorter one — or none — lists
+   * the top articles in the workspace's order (default 20, at most 50).
+   * Articles come back in the config's `contentLocale` when the workspace
+   * wrote them in it.
+   */
+  searchHelp(
+    q: string,
+    options: { category?: string; limit?: number } = {},
+  ): Promise<HelpArticleList> {
+    return this.rest.getHelpArticles({ q, category: options.category, limit: options.limit });
+  }
+
+  /**
+   * `GET /help/articles/:id`, then record that the visitor read it —
+   * fire-and-forget: a count that fails must never cost them the article.
+   */
+  async getHelpArticle(id: string): Promise<HelpArticle> {
+    const article = await this.rest.getHelpArticle(id);
+    void this.recordHelpView(article.id.length > 0 ? article.id : id);
+    return article;
+  }
+
+  /** "Was this helpful?" for an article. Rejects with a typed error on failure. */
+  async rateHelpArticle(id: string, helpful: boolean): Promise<void> {
+    // Never under a visitor id that an identity switch is forgetting.
+    await this.identityChain;
+    await this.rest.postHelpFeedback(id, {
+      visitorId: this.visitorId,
+      sessionId: this.helpSessionId,
+      helpful,
+    });
+  }
+
+  private async recordHelpView(id: string): Promise<void> {
+    try {
+      await this.identityChain;
+      const visitorId = this.visitorIdValue;
+      if (visitorId == null || this.disposed) return;
+      await this.rest.postHelpView(id, { visitorId, sessionId: this.helpSessionId });
+    } catch {
+      // Analytics only.
     }
   }
 
@@ -1068,6 +1812,9 @@ export class SessionController {
     // heartbeat() is public and can be reached (e.g. via setAppLifecycle)
     // before boot() finishes, when there is no visitorId yet.
     if (this.visitorIdValue == null) return;
+    // …or before a signed-in visitor on record has been lined up with whoever
+    // is using the app now, when the id may be one about to be forgotten.
+    if (this.identityPending) return;
     void this.rest
       .heartbeat({
         visitorId: this.visitorIdValue,
@@ -1108,7 +1855,9 @@ export class SessionController {
     const socket = new WidgetSocket(this.config.normalizedApiBase, token, {
       onMessageNew: (m) => this.handleMessageNew(m),
       onMessageUpdated: (m) => this.handleMessageUpdated(m),
+      onMessageDeleted: (d) => this.forgetUnsent([d.id], d.conversationId),
       onAgentTyping: (t) => this.handleAgentTyping(t),
+      onAssistantTyping: (t) => this.handleAssistantTyping(t),
       onWorkspaceAvailability: (a) => this.applyWorkspaceAvailability(a),
       onMessagesRead: (at) => this.advanceReadWatermark(at),
       onConversationClosed: (id) => this.handleConversationClosed(id),
@@ -1131,6 +1880,7 @@ export class SessionController {
   private connectPresence(): void {
     if (this.presence != null) return;
     if (this.visitorIdValue == null) return;
+    if (this.identityPending) return;
     const p = new PresenceSocket(
       this.config.normalizedApiBase,
       this.config.tenantSlug,
@@ -1161,6 +1911,16 @@ export class SessionController {
    * send is a three-step match. Read the numbered steps below twice.
    */
   private handleMessageNew(msg: ChatMessage): void {
+    if (this.unsentIds.has(msg.id)) return;
+
+    // The assistant's reply is its own "done typing": clear the indicator now
+    // rather than waiting on a stop event that may have been lost.
+    if (isFromAssistant(msg) && this.assistantTyping.get()) {
+      this.clearTypingTimer();
+      this.agentTyping.set(false);
+      this.assistantTyping.set(false);
+    }
+
     const list = this.messages.get();
 
     // 1) Dedup by id. Already have it (e.g. our own echo, already reconciled)
@@ -1203,12 +1963,19 @@ export class SessionController {
     this.appendMessage(msg);
     const p = this.phase.get();
     if (isFromAgent(msg) && p !== 'chat' && p !== 'feedback') {
+      this.unreadIds.add(msg.id);
       this.unreadCount.set(this.unreadCount.get() + 1);
     }
     this.messageEmitter.emit(msg);
   }
 
+  /**
+   * `message:updated`: the whole message again — an agent editing their reply
+   * (new `body`, `editedAt` set), a media re-host, a delivery receipt.
+   * Replaced by id, in place.
+   */
   private handleMessageUpdated(msg: ChatMessage): void {
+    if (this.unsentIds.has(msg.id)) return;
     const list = this.messages.get();
     const idx = list.findIndex((m) => m.id === msg.id);
     if (idx === -1) {
@@ -1226,11 +1993,46 @@ export class SessionController {
     this.setMessages(dedupSort(next));
   }
 
-  private handleAgentTyping(isTyping: boolean): void {
+  /**
+   * Take down messages an agent unsent, and remember them.
+   *
+   * One path for the live `message:deleted` and for the `unsentIds` every
+   * history response carries (session open or restore, paging, the reconnect
+   * backfill) — the second is how a visitor who was away when an agent took a
+   * reply back stops seeing it. Each id leaves the thread with no placeholder,
+   * comes off the unread badge if it was counted there, and is announced on
+   * {@link onMessageDeleted} once — the first time this controller hears of it.
+   */
+  private forgetUnsent(ids: readonly string[], conversationId?: string): void {
+    const fresh = ids.filter((id) => id.length > 0 && !this.unsentIds.has(id));
+    if (fresh.length === 0) return;
+    for (const id of fresh) this.unsentIds.add(id);
+    const list = this.messages.get();
+    if (list.some((m) => this.unsentIds.has(m.id))) {
+      this.setMessages(list.filter((m) => !this.unsentIds.has(m.id)));
+    }
+    const convId = conversationId != null && conversationId.length > 0
+      ? conversationId
+      : (this.conversationIdValue ?? '');
+    for (const id of fresh) {
+      if (this.unreadIds.delete(id) && this.unreadCount.get() > 0) {
+        this.unreadCount.set(this.unreadCount.get() - 1);
+      }
+      this.deletedEmitter.emit({ id, conversationId: convId });
+    }
+  }
+
+  private clearTypingTimer(): void {
     if (this.typingTimer != null) {
       clearTimeout(this.typingTimer);
       this.typingTimer = null;
     }
+  }
+
+  private handleAgentTyping(isTyping: boolean): void {
+    this.clearTypingTimer();
+    // A person typing is never the assistant, whatever was showing before.
+    this.assistantTyping.set(false);
     if (!isTyping) {
       this.agentTyping.set(false);
       return;
@@ -1242,6 +2044,28 @@ export class SessionController {
       this.agentTyping.set(false);
       this.typingTimer = null;
     }, TYPING_AUTO_CLEAR_MS);
+  }
+
+  /**
+   * The assistant started or finished composing a reply.
+   *
+   * It sends an explicit stop when the reply is ready, and a reply can take
+   * ten seconds or more, so the 4-second clear used for a person would drop
+   * the indicator halfway and leave the visitor watching a silent thread. The
+   * backstop is long instead — only for a stop lost to a dropped connection.
+   * Its reply arriving also clears it (see {@link handleMessageNew}).
+   */
+  private handleAssistantTyping(isTyping: boolean): void {
+    this.clearTypingTimer();
+    // The label flag first, so a row built from the typing change reads it.
+    this.assistantTyping.set(isTyping);
+    this.agentTyping.set(isTyping);
+    if (!isTyping) return;
+    this.typingTimer = setTimeout(() => {
+      this.agentTyping.set(false);
+      this.assistantTyping.set(false);
+      this.typingTimer = null;
+    }, ASSISTANT_TYPING_BACKSTOP_MS);
   }
 
   private handleConversationClosed(closedConversationId: string): void {
@@ -1329,9 +2153,12 @@ export class SessionController {
   }
 
   private async remintImpl(): Promise<boolean> {
+    const epoch = this.identityEpoch;
     try {
       const res = await this.rest.postSession({
         visitorId: this.visitorId,
+        userId: this.claimUserId,
+        userHash: this.claimUserHash,
         name: this.profile?.name,
         email: this.profile?.email,
         phone: this.phone ?? this.profile?.phone,
@@ -1339,10 +2166,14 @@ export class SessionController {
         resumeOnly: true,
       });
 
+      if (epoch !== this.identityEpoch) return false;
+
       if (res.hasActiveConversation && res.token != null) {
         this.token = res.token;
         this.conversationIdValue = res.conversationId ?? this.conversationIdValue;
         await this.storage.write(StorageKeys.token, res.token);
+        // A registration that failed, or was held, gets another go now.
+        void this.syncPush();
         // Apply the fresh token. A LIVE socket will not re-read its handshake
         // auth on a no-op connect(), so force a fresh handshake — its
         // reconnect (with hasConnectedOnce already true) then owns the gap
@@ -1367,7 +2198,7 @@ export class SessionController {
       this.setPhase(this.idlePhase());
       return false;
     } catch (e) {
-      this.emitError(e);
+      if (epoch === this.identityEpoch) this.emitError(e);
       return false;
     }
   }
@@ -1392,6 +2223,7 @@ export class SessionController {
     );
 
     const fetched: ChatMessage[] = [];
+    const unsent: string[] = [];
     let cursor: string | null = null;
     for (let pages = 0; pages < MAX_BACKFILL_PAGES; pages++) {
       let page: MessagePage;
@@ -1404,6 +2236,7 @@ export class SessionController {
         // next guardAuth call re-mints and re-backfills cleanly.
         break;
       }
+      unsent.push(...page.unsentIds);
       if (page.messages.length === 0) break;
       fetched.push(...page.messages);
 
@@ -1414,6 +2247,9 @@ export class SessionController {
       if (overlaps || cursor == null) break;
     }
 
+    // Anything an agent unsent while we were away goes, whether or not a page
+    // brought anything new.
+    this.forgetUnsent(unsent);
     if (fetched.length > 0) this.mergeMessages(fetched);
   }
 
@@ -1484,6 +2320,8 @@ export class SessionController {
     const list = [...this.messages.get()];
 
     for (const msg of incoming) {
+      // A page fetched just before an agent unsent one of its rows.
+      if (this.unsentIds.has(msg.id)) continue;
       if (isFromCustomer(msg) && !list.some((m) => m.id === msg.id)) {
         const body = (msg.body ?? '').trim();
         const optIdx = list.findIndex(
@@ -1622,6 +2460,7 @@ export class SessionController {
     this.closureLabel.set(a.closureLabel ?? null);
     this.nextOpenLocal.set(a.nextOpenLocal ?? null);
     this.workspaceTimezone.set(a.timezone ?? null);
+    this.assistantCovers.set(a.assistantCovers);
     // Same rule as refreshAvailability(): a visitor with a conversation keeps
     // it (minus the composer); one without gets the notice. Closing time shows
     // a notice — it never moves a visitor mid-conversation.
@@ -1669,6 +2508,7 @@ export class SessionController {
     this.teardownSocket();
     this.teardownPresence();
     this.messageEmitter.close();
+    this.deletedEmitter.close();
     this.proactiveEmitter.close();
     this.errorEmitter.close();
   }

@@ -131,6 +131,47 @@ export function insetEnd(
 }
 
 /**
+ * Corner radii named by the CHAT's start and end.
+ *
+ * `borderBottomStartRadius` and friends resolve through the HOST's direction,
+ * exactly as `marginStart` does, so a bubble that put its tail on
+ * `bottomStart` drew it on the wrong corner whenever the chat's direction
+ * differed from the app's — an Arabic chat in an English app had every team
+ * bubble's tail pointing away from the team. Start and end are swapped when
+ * the two disagree, which lands each radius on the corner the chat means.
+ */
+export function logicalRadii(
+  direction: Direction,
+  radii: { topStart: number; topEnd: number; bottomStart: number; bottomEnd: number },
+  hostRtl: boolean = I18nManager.isRTL,
+): ViewStyle {
+  const agrees = (direction === 'rtl') === hostRtl;
+  return agrees
+    ? {
+        borderTopStartRadius: radii.topStart,
+        borderTopEndRadius: radii.topEnd,
+        borderBottomStartRadius: radii.bottomStart,
+        borderBottomEndRadius: radii.bottomEnd,
+      }
+    : {
+        borderTopStartRadius: radii.topEnd,
+        borderTopEndRadius: radii.topStart,
+        borderBottomStartRadius: radii.bottomEnd,
+        borderBottomEndRadius: radii.bottomStart,
+      };
+}
+
+/** A message's outline: round everywhere but the bottom corner on the sender's own side. */
+export function bubbleRadii(direction: Direction, fromCustomer: boolean): ViewStyle {
+  return logicalRadii(direction, {
+    topStart: 16,
+    topEnd: 16,
+    bottomStart: fromCustomer ? 16 : 4,
+    bottomEnd: fromCustomer ? 4 : 16,
+  });
+}
+
+/**
  * Wrap a run of digits and separators so it keeps its own reading order inside
  * a right-to-left sentence.
  *

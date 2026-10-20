@@ -34,6 +34,8 @@ export interface EasyLiveChatLauncherProps {
   locale?: string;
   /** Distance from the screen edges. Defaults to 16. */
   offset?: number;
+  /** Passed to the chat screen — see `EasyLiveChatScreenProps.showHelpArticles`. */
+  showHelpArticles?: boolean;
 }
 
 /**
@@ -63,6 +65,7 @@ export function EasyLiveChatLauncher({
   stringsByLocale,
   locale,
   offset = 16,
+  showHelpArticles,
 }: EasyLiveChatLauncherProps): React.JSX.Element {
   const config = useWidgetConfig();
   const unread = useUnreadCount();
@@ -98,6 +101,9 @@ export function EasyLiveChatLauncher({
   const onTap = useCallback(async () => {
     if (opening || presented) return;
     setOpening(true);
+    // The pre-chat form here draws consent checkboxes, so ask the server for
+    // them before this open() fetches the config. See the chat screen.
+    EasyLiveChat.instance.supportsConsent = true;
     try {
       await EasyLiveChat.instance.open();
     } catch {
@@ -191,6 +197,7 @@ export function EasyLiveChatLauncher({
             locale={locale}
             showAppBar
             onRequestClose={close}
+            showHelpArticles={showHelpArticles}
           />
         </SafeAreaView>
       </Modal>

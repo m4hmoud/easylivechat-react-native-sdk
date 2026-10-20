@@ -32,9 +32,12 @@ export {
 export {
   type EasyLiveChatErrorCodeValue,
   type EasyLiveChatErrorOptions,
+  type IdentityNotVerifiedError,
+  type IdentityRejectionReason,
   EasyLiveChatError,
   EasyLiveChatErrorCode,
   errorForResponse,
+  isIdentityNotVerified,
   toEasyLiveChatError,
 } from './errors';
 
@@ -72,7 +75,9 @@ export {
   type ChatMessage,
   type RehostedAttachment,
   hasAttachments,
+  isEdited,
   isFromAgent,
+  isFromAssistant,
   isFromCustomer,
   isLocalTemp,
   isResolvableUrl,
@@ -80,6 +85,7 @@ export {
   parseChatMessage,
   parseChatMessages,
   parseDate,
+  parseOptionalDate,
   parseRehostedAttachment,
   postChatSubmission,
   receiptFor,
@@ -89,12 +95,39 @@ export {
 } from './models/chat-message';
 
 export {
+  type BotButton,
+  type BotButtons,
+  type BotReply,
+  type MessageCard,
+  type MessageCardButton,
+  type QuickReplyOffer,
+  MAX_BOT_BUTTONS,
+  MAX_CARD_BUTTONS,
+  MAX_CAROUSEL_CARDS,
+  botButtonsOf,
+  botReplyOf,
+  buttonsOpen,
+  chosenButtonId,
+  isSafeCardUrl,
+  messageCardsOf,
+  parseMessageCard,
+  quickRepliesOf,
+  quickRepliesOnOffer,
+  replyLabel,
+} from './models/message-extras';
+
+export {
   type PreChatField,
   type PreChatForm,
   DISABLED_PRE_CHAT_FORM,
   EMAIL_PATTERN,
+  cleanPolicyUrl,
+  consentFieldsOf,
+  isConsentField,
   parsePreChatField,
   parsePreChatForm,
+  validateConsents,
+  validatePreChatConsent,
   validatePreChatField,
 } from './models/pre-chat-form';
 
@@ -123,6 +156,7 @@ export {
 } from './models/widget-config';
 
 export {
+  type DeletedMessage,
   type FeedbackResult,
   type MessagePage,
   type ProactiveMessage,
@@ -137,23 +171,56 @@ export {
   parseSendAck,
   parseSessionResult,
   parseStoredProfile,
+  parseUnsentIds,
   parseUploadedFile,
   serializeStoredProfile,
 } from './models/results';
+
+export {
+  type HelpArticle,
+  type HelpArticleList,
+  type HelpArticleSummary,
+  type HelpViewResult,
+  HELP_SEARCH_MIN_LENGTH,
+  parseHelpArticle,
+  parseHelpArticleList,
+  parseHelpArticleSummary,
+} from './models/help-articles';
+
+export {
+  type HelpBlock,
+  type HelpInline,
+  helpInlineText,
+  parseHelpMarkdown,
+  safeHelpHref,
+  safeHelpImage,
+} from './models/help-markdown';
 
 // ── controller + transport (advanced / testing surface) ───────────────────
 export {
   type AppLifecycle,
   type ChatPhase,
   type ConnectionState,
+  type VisitorChange,
+  type PreChatSubmission,
   type VisitorIdentity,
   SessionController,
   dedupSort,
   isAuthHandshakeError,
   newestSessionStartMarker,
+  visitorChangeFor,
 } from './session-controller';
 
-export { type SessionArgs, type UploadArgs, type UploadSource, RestClient } from './rest-client';
+export {
+  type HelpListArgs,
+  type PushPlatform,
+  type RegisterPushArgs,
+  type SessionArgs,
+  type UploadArgs,
+  type UploadSource,
+  CONSENT_CAPABILITY,
+  RestClient,
+} from './rest-client';
 export { type WidgetSocketHandlers, WidgetSocket, describeError } from './widget-socket';
 export { type PresenceSocketHandlers, PresenceSocket } from './presence-socket';
 
@@ -162,6 +229,8 @@ export {
   type WorkspaceAvailabilityView,
   useAgentLastReadAt,
   useAgentTyping,
+  useAssistantCovers,
+  useAssistantTyping,
   useConnectionState,
   useEasyLiveChat,
   useEasyLiveChatMessages,
@@ -170,6 +239,7 @@ export {
   useIsBooted,
   useOnError,
   useOnMessage,
+  useOnMessageDeleted,
   useOnProactiveMessage,
   useUnreadCount,
   useWidgetConfig,
@@ -181,5 +251,7 @@ export {
 // visitor id's random source is INJECTED rather than probed. See uuid.ts.
 export { setUuidGenerator, uuidV4 } from './internal/uuid';
 
-// ── push (documented non-goal; see the README) ────────────────────────────
+// ── push ──────────────────────────────────────────────────────────────────
+// `EasyLiveChat.instance.setPushToken()` is the API; this is the old stub's
+// name, kept as a deprecated alias that forwards to it.
 export { EasyLiveChatPush } from './push';

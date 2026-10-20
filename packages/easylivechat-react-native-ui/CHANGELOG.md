@@ -7,6 +7,170 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-10-19
+
+Requires `@easylivechat/react-native` ^0.1.4 (identity verification, help
+articles, consent fields, reply buttons and cards, and the AI assistant).
+
+**Parity:** this matches `easylivechat_ui` 0.1.73 in full, the AI assistant's
+display included — the "AI" badge and the assistant's name on its replies,
+"Assistant is typing…", and the assistant's notices on the closed and busy
+screens.
+
+### Added
+
+- **Cards, carousels, reply buttons and quick replies in the thread.** An
+  agent's card draws as a card (image, title, text, buttons — links open in
+  the visitor's browser), two or more as a row swiped sideways; a message's
+  reply buttons (a bot's or an agent's) draw as chips under its own words —
+  not as its numbered-menu body — live while the question is open, the chosen
+  one filled; a card's reply buttons answer the same way; the greeting's and
+  the assistant's quick replies draw under the newest message. Every tap sends
+  once, however fast the second one comes — the guard is a ref, not state,
+  which two taps inside one frame both read before React re-renders — and the
+  chips wait, disabled, for the server. They also go dead the moment the
+  workspace switches to "notice only" mid-chat. A card is 280 wide, or what
+  the row leaves on a phone too narrow for that, and wears the team's bubble:
+  surface, hairline and tail. Each run of its text — title, text, every
+  button label — faces the way it reads. `MessageBubble` takes `quickReplies`,
+  `onQuickReply`, `showButtons`, `chosenButtonId` and `onButton`; `ThreadView`
+  wires them. New strings (`suggestedReplies`, `cards`) in all 13 languages.
+- **The AI assistant says it is automated.** Its replies carry the
+  assistant's name and an "AI" badge above the bubble — the accent on a tint
+  of it, after the name in reading order in either direction — shown even when
+  the workspace hides agent names: hiding a colleague's name is the tenant's
+  choice to make, hiding that nobody is there is not. Only the assistant's own
+  replies (`isFromAssistant`) are badged: the automatic greeting is a bot
+  message too, and draws like any other message from the business. While the
+  assistant composes, the typing row is announced as "Assistant is typing…"
+  instead of "Typing…" — the row still follows `agentTyping`, and
+  `assistantTyping` names it. While it covers a closed or busy workspace
+  (`assistantCovers`), the notice says it can help in the meantime instead of
+  "leave a message and we'll reply when we're back", and on the banner the
+  tenant's leave-a-message copy gives way to it; the reopening time stays,
+  because it is when a person is back. Four new strings in all 13 languages,
+  worded as in `easylivechat_ui` and overridable like the rest: `aiBadge`,
+  `assistantTyping`, `closedAssistantNotice`, `noAgentsAssistantNotice`.
+- **Help articles.** When the workspace turns "Show help articles" on,
+  `EasyLiveChatScreen` offers a "Browse help articles" row before the visitor
+  has written (the chat, the pre-chat form and the closed notice). It opens
+  search over the workspace's top articles (debounced; one character is still
+  the top list), headed "Popular articles", with a clear button in the field,
+  the number of results read out to a screen reader after each search
+  ("Articles found: 3" — a live region on Android, an announcement on iOS), a
+  labelled loading state, and its own "could not be loaded" with Retry. Then
+  the article, "Was this helpful? Yes / No" — answered once per visit — and
+  "Still need help? Start a chat" under the list and every article. An article
+  that has been unpublished says "This article is no longer available." rather
+  than that something broke. The help sits over the still-mounted chat, so a
+  started draft survives. `showHelpArticles={false}` (also on the launcher)
+  keeps it out.
+- `EasyLiveChatHelpScreen` is the same as a screen of its own, for a host's
+  Help tab: `onClose`, `onStartChat` — omitted, "Start a chat" turns the help
+  screen into an `EasyLiveChatScreen` in place, as `easylivechat_ui` does —
+  `onOpenLink` for article links, `showAppBar` (on by default; off, an article
+  gets a "Back" of its own) and `initialArticleId`. `HelpView`, `ElcHelpApi`
+  (the article source, for tests or a host's own cache) and
+  `helpArticleDirection` are exported too.
+- Article bodies are drawn natively by `HelpMarkdownView` from the shared help
+  dialect — headings, paragraphs with line breaks, lists, quotes, code, bold,
+  italic, links and images — with no HTML and no WebView; only
+  http(s)/mailto:/tel: links and http(s) images ever become tappable or load.
+  An article reads in its own language's direction: from its `locale` when the
+  server sends one, else from its first strong character, else the screen's
+  (`direction` on `HelpMarkdownView`); code stays left-to-right. Links go to
+  `onOpenLink` when given, else `Linking`.
+- 17 help strings in all 13 languages, worded as in the web widget and
+  `easylivechat_ui`, under the same keys: `helpTitle`, `helpBrowse`,
+  `helpSearchPlaceholder`, `helpSearchClear`, `helpTopArticles`,
+  `helpResultsFound`, `helpLoading`, `helpLoadFailed`, `helpNoResults`,
+  `helpArticleUnavailable`, `helpWasHelpful`, `helpYes`, `helpNo`,
+  `helpFeedbackThanks`, `helpStillNeedHelp`, `helpStartChat`, `helpBack`.
+- **Consent checkboxes.** A workspace's consent field draws as a checkbox with
+  the tenant's sentence beside it — verbatim, start-aligned, wrapping however
+  long it is (up to 500 characters) — and, when the field has one, a "Privacy
+  policy" link under the sentence that opens in the visitor's browser through
+  `Linking`, never inside the host app. The sentence is the checkbox's label,
+  so tapping it ticks the box; the link sits outside that control as its own
+  target and accessibility element, so opening the policy never ticks
+  anything. A required box left unticked keeps the chat from starting and says
+  "Please tick this box to continue" under it, cleared the moment it is
+  ticked; the server's own `CONSENT_REQUIRED` lands on the same box. A consent
+  is never sent as a field value: the ticked ids go as `consents`. The row is
+  laid out with the chat's own direction, box at the start edge, in RTL too.
+- The launcher and the chat screen set `EasyLiveChat.supportsConsent`, so
+  their config asks for consent fields (`?caps=consent`). A server that has
+  none, or predates them, sends none, and the form is what it was. Two new
+  strings in all 13 languages: `privacyPolicy` and `consentRequired`.
+- An identity refusal (`IDENTITY_NOT_VERIFIED`) on the pre-chat form shows the
+  generic "something went wrong" to the visitor; the developer's message stays
+  on `onError`.
+- **Render tests.** The UI's components are now rendered in the test suite —
+  the help screen, the image viewer, consent, cards, carousels, reply buttons,
+  quick replies, ticks, "edited", voice notes, the recording waveform, links,
+  the AI badge, the assistant's typing label and its closed and busy notices —
+  ported from `easylivechat_ui`'s widget tests, against a rendering
+  React Native stand-in with `@testing-library/react-native` (no Metro, no
+  simulator). How it works: `test/README.md` at the workspace root.
+
+### Changed
+
+- `SecureAsyncStorage` keeps the identified user id in the keychain, beside
+  the token and the profile — it is often an email or an account number — as
+  `easylivechat_ui`'s `SecurePrefsStorage` does. One left in AsyncStorage by
+  an earlier build is moved across on first read, and signing out clears both
+  places.
+- **The image viewer zooms on Android.** It zoomed through a `ScrollView`'s
+  `maximumZoomScale`, which only iOS implements, so an Android visitor could
+  not enlarge a picture at all. It now reads pinch, pan and double-tap from the
+  responder system itself — the same on both platforms, with no new
+  dependency: pinch zooms about the fingers and follows them, one finger pans
+  while zoomed (never off the picture's edge), double-tap zooms 2.5× toward the
+  point tapped and back out, and a tap on the backdrop leaves — but not while
+  zoomed in, where a tap is how a pan ends. The × closes at any scale, and a
+  picture that will not load says so instead of a black void. Matches
+  `easylivechat_ui`'s viewer.
+
+### Fixed
+
+- **Nothing reached the keychain.** `expo-secure-store` throws on any key
+  outside letters, digits, `.`, `-` and `_`, every key the core uses has a
+  colon in it, and the throw was swallowed — so the session token and the
+  visitor's cached profile were never stored, and the profile was gone on
+  every cold start. Keys are mapped to names the secure store accepts
+  (`secureStoreKey`).
+- A bubble's tail sat on the wrong corner when the chat's direction differed
+  from the app's — an Arabic chat in an English app had every team bubble
+  pointing away from the team. `borderBottomStartRadius` follows the HOST's
+  direction, not the chat's; corners are now written for the chat's
+  (`logicalRadii`, `bubbleRadii`), on bubbles, cards and the typing row.
+- The same host-versus-chat mix-up in spacing: the typing indicator's dots
+  touched in that case, and the gaps beside a message's time, the composer's
+  pause button and its attachment thumbnails opened on the wrong side; the
+  remove × on a thumbnail took the wrong corner inside an app that is itself
+  right-to-left.
+- The chat app bar's back button had no accessibility label; it reads "Back"
+  in the chat's language.
+- A field error naming a field the form does not show — the tenant changed the
+  form while the visitor was filling it in — now says something went wrong and
+  re-reads the config, instead of highlighting nothing.
+- `expo-file-system` is listed as external in the build, like every other
+  optional peer.
+- The README claimed `expo-crypto` was a required install. It is the
+  recommended random source, wired by the host with `setUuidGenerator`, and
+  not a dependency of this package.
+
+## [0.1.6] - 2026-10-06
+
+### Added
+
+- "edited" beside the time. A message an agent changed after sending it says
+  so in its meta row, in the time's own muted style, on the leading side of the
+  time in either direction — translated into all 13 languages (`edited` in
+  `src/l10n/strings.json`, overridable like every other string). An unsent
+  message simply leaves the thread — one unsent while the app was away too.
+  Requires `@easylivechat/react-native` ^0.1.3. Matches `easylivechat_ui` 0.1.72.
+
 ## [0.1.5] - 2026-09-29
 
 ### Fixed

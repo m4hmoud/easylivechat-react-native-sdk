@@ -3,17 +3,21 @@ import {
   type MessageReceipt,
   type RehostedAttachment,
   EasyLiveChat,
+  botButtonsOf,
+  isEdited,
+  isFromAssistant,
   isFromCustomer,
   isResolvableUrl,
+  messageCardsOf,
   postChatSubmission,
   receiptFor,
   systemI18nKey,
   systemI18nParam,
 } from '@easylivechat/react-native';
 import React, { useMemo } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 
-import { type DirectionStyles, isolate, useDirectionStyles } from '../direction';
+import { type DirectionStyles, bubbleRadii, isolate, useDirectionStyles } from '../direction';
 import {
   BrokenImageIcon,
   CheckIcon,
@@ -26,6 +30,7 @@ import {
 import type { Strings } from '../l10n';
 import { ERROR_COLOR, type EasyLiveChatTheme, onColor, withAlpha } from '../theme';
 import { LinkifiedText } from './linkified-text';
+import { CardCarousel, CardView, ReplyChips } from './message-extras-view';
 import { RemoteImage } from './remote-image';
 import { VoiceNoteTile, looksLikeAudio } from './voice-note-tile';
 import { MAX_FONT_SCALE } from '../text-scaling';
@@ -39,6 +44,23 @@ export interface MessageBubbleProps {
   /** How far an agent has read, for the visitor's own sent/read ticks. */
   agentLastReadAt: Date | null;
   onOpenImage: (uri: string) => void;
+  /**
+   * Quick replies to draw under this message — empty unless it is the one
+   * `quickRepliesOnOffer` picked for the thread.
+   */
+  quickReplies?: string[];
+  /** Sends a tapped quick reply. Null draws `quickReplies` disabled. */
+  onQuickReply?: ((reply: string) => void) | null;
+  /**
+   * Draw this message's reply buttons (`botButtonsOf`) and a card's reply
+   * buttons as live. Off, a message with buttons reads as its body — words
+   * and a numbered menu — as on clients that predate buttons.
+   */
+  showButtons?: boolean;
+  /** The reply button the visitor already chose under this message. */
+  chosenButtonId?: string | null;
+  /** Answers with one of its reply buttons: the id and the label to send. Null draws them disabled. */
+  onButton?: ((id: string, label: string) => void) | null;
 }
 
 /**
@@ -159,12 +181,27 @@ function ChatBubble({
   strings,
   agentLastReadAt,
   onOpenImage,
+  quickReplies = [],
+  onQuickReply = null,
+  showButtons = false,
+  chosenButtonId = null,
+  onButton = null,
   dir,
 }: MessageBubbleProps & { dir: DirectionStyles }): React.JSX.Element {
   const customer = isFromCustomer(message);
   const bubbleColor = customer ? theme.primary : theme.surface;
   const textColor = customer ? onColor(theme.primary) : theme.text;
-  const body = (message.body ?? '').trim();
+  // One card or a carousel draws instead of the bubble; reply buttons (a
+  // bot's, or an agent's) draw under the message's own words — never ALSO
+  // the numbered menu its body carries for older clients.
+  const cards = messageCardsOf(message);
+  const buttons = showButtons ? botButtonsOf(message) : null;
+  const chips = cards.length === 0 ? buttons : null;
+  const body = (chips ? chips.text : (message.body ?? '')).trim();
+  const answer = buttons && onButton
+    ? (id: string, label: string) => onButton(id, buttons.buttons.find((b) => b.id === id)?.label ?? label)
+    : null;
+  const chosenLabel = chips?.buttons.find((b) => b.id === chosenButtonId)?.label ?? null;
 
   const agentName = trimmedOrNull(message.senderName);
   const jobTitle = trimmedOrNull(message.senderJobTitle);
@@ -180,6 +217,11 @@ function ChatBubble({
   // every later one did. `AgentAvatar` degrades to an initial, and to a
   // neutral circle when there is no name either.
   const withAvatar = !customer && showAgentAvatar;
+
+  // A card is 280 wide, or what the row leaves on a phone too narrow for that
+  // — the row's padding (12 a side) and, beside an avatar, its 28 + 8.
+  const window = useWindowDimensions();
+  const cardMaxWidth = Math.max(160, window.width - 24 - (withAvatar ? 36 : 0));
 
   // A message that is ONLY self-drawn media gets no bubble. The bubble exists
   // to put a surface behind text; wrapped around a photo or a voice note it
@@ -212,12 +254,51 @@ function ChatBubble({
 
   const column = (
     <View style={{ alignItems: customer ? dir.alignEnd : dir.alignStart, flexShrink: 1 }}>
-      {!customer && showAgentName && agentLine != null ? (
+      {isFromAssistant(message) ? (
+        // Assistant messages always carry their name and an AI badge, even
+        // when the workspace hides agent names: hiding a colleague's name is
+        // the tenant's choice to make, hiding that nobody is there is not.
+        // `dir.row` puts the name on the leading side and the badge after it
+        // in either direction; a spacer, not a margin, because a logical
+        // margin follows the HOST's direction, not this subtree's.
+        <View style={[styles.assistantLine, { flexDirection: dir.row }]}>
+          {agentName != null ? (
+            <>
+              <Text
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                style={[styles.agentName, dir.textStart, { color: withAlpha(theme.text, 0.6) }]}
+              >
+                {agentName}
+              </Text>
+              <View style={{ width: 6 }} />
+            </>
+          ) : null}
+          <AiBadge label={strings.t('aiBadge')} theme={theme} dir={dir} />
+        </View>
+      ) : !customer && showAgentName && agentLine != null ? (
         <Text style={[styles.agentLine, dir.textStart, { color: withAlpha(theme.text, 0.6) }]}>
           {agentLine}
         </Text>
       ) : null}
 
+      {cards.length > 1 ? (
+        <CardCarousel
+          cards={cards}
+          theme={theme}
+          label={strings.t('cards')}
+          chosenReplyId={buttons ? chosenButtonId : null}
+          onReply={answer}
+        />
+      ) : cards.length === 1 ? (
+        <CardView
+          card={cards[0]!}
+          theme={theme}
+          chosenReplyId={buttons ? chosenButtonId : null}
+          onReply={answer}
+          maxWidth={cardMaxWidth}
+        />
+      ) : chips && body.length === 0 && tiles.length === 0 ? null : (
       <View
         style={[
           styles.bubble,
@@ -226,11 +307,9 @@ function ChatBubble({
             backgroundColor: bareMedia ? 'transparent' : bubbleColor,
             paddingHorizontal: bareMedia ? 0 : 14,
             paddingVertical: bareMedia ? 0 : 10,
-            // Logical corners: the tail hugs the sender's own side in RTL too.
-            borderTopStartRadius: 16,
-            borderTopEndRadius: 16,
-            borderBottomStartRadius: customer ? 16 : 4,
-            borderBottomEndRadius: customer ? 4 : 16,
+            // The tail hugs the sender's own side, in the CHAT's direction —
+            // not the host app's, which is what bare start/end would follow.
+            ...bubbleRadii(dir.direction, customer),
             borderWidth: customer || bareMedia ? 0 : StyleSheet.hairlineWidth,
             borderColor: withAlpha(theme.text, 0.08),
           },
@@ -263,6 +342,26 @@ function ChatBubble({
           </Text>
         ) : null}
       </View>
+      )}
+
+      {chips ? (
+        <ReplyChips
+          labels={chips.buttons.map((b) => b.label)}
+          chosen={chosenLabel}
+          onSelect={answer ? (_label, i) => answer(chips.buttons[i]!.id, chips.buttons[i]!.label) : null}
+          theme={theme}
+          label={strings.t('suggestedReplies')}
+          dir={dir}
+        />
+      ) : quickReplies.length > 0 ? (
+        <ReplyChips
+          labels={quickReplies}
+          onSelect={onQuickReply ? (reply) => onQuickReply(reply) : null}
+          theme={theme}
+          label={strings.t('suggestedReplies')}
+          dir={dir}
+        />
+      ) : null}
 
       <MetaRow
         message={message}
@@ -291,7 +390,34 @@ function ChatBubble({
   );
 }
 
-// ── meta row (time + receipt) ─────────────────────────────────────────────
+// ── the AI badge ──────────────────────────────────────────────────────────
+
+/**
+ * The small "AI" pill beside an assistant message's sender name.
+ *
+ * Exported for the render tests, not from the package — as `AiBadge` is
+ * `@visibleForTesting` in `easylivechat_ui`.
+ */
+export function AiBadge({
+  label,
+  theme,
+  dir,
+}: {
+  label: string;
+  theme: EasyLiveChatTheme;
+  dir: DirectionStyles;
+}): React.JSX.Element {
+  return (
+    <View style={[styles.aiBadge, { backgroundColor: withAlpha(theme.primary, 0.14) }]}>
+      {/* Unclamped: the pill has no fixed height, so it grows with the text. */}
+      <Text style={[styles.aiBadgeText, { color: theme.primary, writingDirection: dir.direction }]}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+// ── meta row (edited + time + receipt) ────────────────────────────────────
 
 function MetaRow({
   message,
@@ -309,6 +435,21 @@ function MetaRow({
   const muted = withAlpha(theme.text, 0.45);
   return (
     <View style={[styles.meta, { flexDirection: dir.row }]}>
+      {isEdited(message) ? (
+        // An agent changed the words after sending them. Said quietly, in the
+        // time's own style, ahead of it — `dir.row` puts it on the leading
+        // side in either direction. A spacer rather than a margin, because a
+        // logical margin follows the PROCESS direction, not this subtree's.
+        <>
+          <Text
+            maxFontSizeMultiplier={MAX_FONT_SCALE}
+            style={{ color: muted, fontSize: 10, writingDirection: dir.direction }}
+          >
+            {strings.t('edited')}
+          </Text>
+          <View style={{ width: 4 }} />
+        </>
+      ) : null}
       <Text maxFontSizeMultiplier={MAX_FONT_SCALE} style={{ color: muted, fontSize: 10 }}>
         {isolate(formatTime(message.createdAt))}
       </Text>
@@ -316,24 +457,30 @@ function MetaRow({
         // The one state that is not a tick. It is the only one the visitor can
         // act on, so it stays a WORDED, TAPPABLE affordance rather than an
         // icon they would have to guess at.
-        <Pressable
-          accessibilityRole="button"
-          hitSlop={8}
-          onPress={() => {
-            // Swallow the (already UI-reflected) failure so a second failure
-            // is not an unhandled rejection.
-            EasyLiveChat.instance.resend(message)?.serverMessageId.catch(() => '');
-          }}
-          style={{ marginStart: 6 }}
-        >
-          <Text maxFontSizeMultiplier={MAX_FONT_SCALE} style={styles.retry}>
-            {strings.t('sendFailedRetry')}
-          </Text>
-        </Pressable>
+        // Spacers, not `marginStart`: a logical margin follows the HOST's
+        // direction, so in an RTL chat inside an LTR app it opened the gap on
+        // the far side of the time.
+        <>
+          <View style={{ width: 6 }} />
+          <Pressable
+            accessibilityRole="button"
+            hitSlop={8}
+            onPress={() => {
+              // Swallow the (already UI-reflected) failure so a second failure
+              // is not an unhandled rejection.
+              EasyLiveChat.instance.resend(message)?.serverMessageId.catch(() => '');
+            }}
+          >
+            <Text maxFontSizeMultiplier={MAX_FONT_SCALE} style={styles.retry}>
+              {strings.t('sendFailedRetry')}
+            </Text>
+          </Pressable>
+        </>
       ) : receipt != null ? (
-        <View style={{ marginStart: 4 }}>
+        <>
+          <View style={{ width: 4 }} />
           <ReceiptTicks receipt={receipt} muted={muted} readColor={theme.primary} strings={strings} />
-        </View>
+        </>
       ) : null}
     </View>
   );
@@ -775,6 +922,15 @@ const styles = StyleSheet.create({
   row: { paddingHorizontal: 12, paddingVertical: 4 },
   bubble: { overflow: 'hidden' },
   agentLine: { fontSize: 11, fontWeight: '600', marginBottom: 2, marginHorizontal: 4 },
+  // The row hugs the leading edge (the column's `alignItems`) and is capped at
+  // the column's width, so a long name ellipsizes rather than pushing the
+  // badge off screen.
+  assistantLine: { alignItems: 'center', maxWidth: '100%', marginBottom: 2, marginHorizontal: 4 },
+  agentName: { fontSize: 11, fontWeight: '600', flexShrink: 1 },
+  aiBadge: { paddingHorizontal: 6, paddingVertical: 1.5, borderRadius: 999 },
+  // No fixed lineHeight: an Arabic-script label (`ar`, `ckb`, `kmr`, `ur`)
+  // keeps its natural, taller line rather than a Latin-sized one.
+  aiBadgeText: { fontSize: 10, fontWeight: '700' },
   meta: { alignItems: 'center', marginTop: 2, paddingHorizontal: 4 },
   retry: {
     color: ERROR_COLOR,

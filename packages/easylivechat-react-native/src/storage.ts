@@ -31,6 +31,14 @@ export const StorageKeys = {
   conversationId: 'easylivechat:conversationId',
 
   /**
+   * The host's own user id this device's visitor was last identified as
+   * (`identify({ userId })`). Compared on the next identity to tell "the same
+   * person", "an anonymous visitor signing in" and "somebody else" apart — see
+   * `SessionController.identify`. The same key name the web widget uses.
+   */
+  identifiedUserId: 'livechattools:identifiedUserId',
+
+  /**
    * Everything that says WHO this visitor is, in the order it should be
    * dropped — the `visitorId` last, because it is the one the server keys the
    * contact on and the others are meaningless without it.
@@ -43,6 +51,7 @@ export const StorageKeys = {
     'easylivechat:widgetToken',
     'easylivechat:conversationId',
     'livechattools:visitorProfile',
+    'livechattools:identifiedUserId',
     'livechattools:visitorId',
   ],
 } as const;

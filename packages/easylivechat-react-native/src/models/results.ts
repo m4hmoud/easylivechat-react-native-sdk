@@ -12,10 +12,22 @@ export interface SessionResult {
   resumed: boolean;
   hasActiveConversation: boolean;
   messages: ChatMessage[];
+  /** Messages an agent unsent in this conversation lately — see {@link MessagePage.unsentIds}. */
+  unsentIds: string[];
 }
 
 function optionalString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
+/**
+ * The ids in a response's `unsentIds`. Anything that is not one is dropped, and
+ * a server that predates the field reads as none.
+ */
+export function parseUnsentIds(raw: unknown): string[] {
+  return Array.isArray(raw)
+    ? raw.filter((id): id is string => typeof id === 'string' && id.length > 0)
+    : [];
 }
 
 export function parseSessionResult(raw: Record<string, unknown>): SessionResult {
@@ -26,6 +38,7 @@ export function parseSessionResult(raw: Record<string, unknown>): SessionResult 
     resumed: raw.resumed === true,
     hasActiveConversation: raw.hasActiveConversation === true,
     messages: parseChatMessages(raw.messages),
+    unsentIds: parseUnsentIds(raw.unsentIds),
   };
 }
 
@@ -39,12 +52,20 @@ export function parseSessionResult(raw: Record<string, unknown>): SessionResult 
 export interface MessagePage {
   messages: ChatMessage[];
   nextCursor: string | null;
+  /**
+   * Messages an agent unsent in this conversation lately (the server keeps a
+   * week of them). A client holding any of them takes them down — that is how
+   * a visitor who was away when one went stops seeing it. Empty from a server
+   * that predates the field.
+   */
+  unsentIds: string[];
 }
 
 export function parseMessagePage(raw: Record<string, unknown>): MessagePage {
   return {
     messages: parseChatMessages(raw.messages),
     nextCursor: optionalString(raw.nextCursor) ?? null,
+    unsentIds: parseUnsentIds(raw.unsentIds),
   };
 }
 
@@ -83,6 +104,19 @@ export function parseFeedbackResult(raw: Record<string, unknown>): FeedbackResul
     comment: typeof raw.comment === 'string' ? raw.comment : undefined,
     ratedAt: typeof raw.ratedAt === 'string' ? parseDate(raw.ratedAt) : null,
   };
+}
+
+/**
+ * A message an agent unsent — see `EasyLiveChat.onMessageDeleted`.
+ *
+ * Arrives live (`message:deleted`) or, for one that went while this client was
+ * not listening, from the `unsentIds` a history response carries.
+ */
+export interface DeletedMessage {
+  /** The unsent message's id. */
+  id: string;
+  /** The conversation it was in. */
+  conversationId: string;
 }
 
 /** A proactive outreach pushed by an agent (`widget:proactive-message`). */

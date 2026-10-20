@@ -11,8 +11,9 @@ export default defineConfig({
   target: 'es2021',
   loader: { '.json': 'json' },
   // Everything native stays external: the UI package must never bundle a
-  // peer, and every optional peer (`expo-audio`, pickers, `expo-image`) is
-  // required lazily so a host that skips it is not forced to install it.
+  // peer, and every optional peer (`expo-audio`, `expo-file-system`, pickers,
+  // `expo-image`) is required lazily so a host that skips it is not forced to
+  // install it.
   external: [
     'react',
     'react-native',
@@ -20,6 +21,7 @@ export default defineConfig({
     '@react-native-async-storage/async-storage',
     'expo-audio',
     'expo-document-picker',
+    'expo-file-system',
     'expo-image',
     'expo-image-picker',
     'expo-linking',

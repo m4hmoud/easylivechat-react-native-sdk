@@ -41,7 +41,13 @@ describe('resetVisitor', () => {
       storage,
     );
     await c.boot();
-    c.identify({ name: 'Ada', email: 'ada@example.com', phone: '+1' });
+    c.identify({
+      name: 'Ada',
+      email: 'ada@example.com',
+      phone: '+1',
+      userId: 'user-ada',
+      userHash: 'hash-ada',
+    });
     await c.startSession({ name: 'Ada' }, { skipValidation: true });
 
     // Everything that says WHO this visitor is, written.
@@ -64,6 +70,7 @@ describe('resetVisitor', () => {
       StorageKeys.token,
       StorageKeys.conversationId,
       StorageKeys.profile,
+      StorageKeys.identifiedUserId,
       StorageKeys.visitorId,
     ];
     expect([...StorageKeys.identity].sort()).toEqual([...durable].sort());
@@ -78,6 +85,8 @@ describe('resetVisitor', () => {
     // installed user. See the Brand section of the repo's CLAUDE.md.
     expect(StorageKeys.visitorId).toBe('livechattools:visitorId');
     expect(StorageKeys.profile).toBe('livechattools:visitorProfile');
+    // The web widget's own name for it, for the same reason.
+    expect(StorageKeys.identifiedUserId).toBe('livechattools:identifiedUserId');
   });
 
   it('mints a fresh visitorId on the next boot, so there is nothing to resume', async () => {

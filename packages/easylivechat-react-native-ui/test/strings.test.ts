@@ -162,4 +162,17 @@ describe('forErrorCode', () => {
     expect(en.forErrorCode('FILE_TOO_LARGE')).toBe(en.t('somethingWentWrong'));
     expect(en.forErrorCode('WHATEVER')).toBe(en.t('somethingWentWrong'));
   });
+
+  it('gives an unticked consent box its own instruction, in every locale', () => {
+    // "Something went wrong" under a checkbox the visitor simply has not
+    // ticked would read as a fault rather than as the thing to do.
+    for (const locale of SUPPORTED_LOCALES) {
+      const s = stringsFor(locale);
+      expect(s.forErrorCode('CONSENT_REQUIRED'), locale).toBe(s.t('consentRequired'));
+      expect(s.t('consentRequired'), locale).not.toBe(s.t('somethingWentWrong'));
+      expect(s.t('privacyPolicy').trim().length, locale).toBeGreaterThan(0);
+    }
+    expect(stringsFor('en').t('consentRequired')).toBe('Please tick this box to continue');
+    expect(stringsFor('ar').t('privacyPolicy')).toBe('سياسة الخصوصية');
+  });
 });

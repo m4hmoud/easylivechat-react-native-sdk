@@ -22,7 +22,7 @@ import {
 } from 'react-native';
 
 import { deviceTextDirection, textDirectionOf } from '../bidi';
-import { type Direction, type DirectionStyles, useDirectionStyles } from '../direction';
+import { type Direction, type DirectionStyles, insetEnd, useDirectionStyles } from '../direction';
 import { CloseIcon, MicIcon, PauseIcon, PlayIcon, PlusIcon, SendIcon, TrashIcon } from '../icons';
 import type { Strings } from '../l10n';
 import type { ElcAttachmentPicker, ElcPickedFile } from '../picked-file';
@@ -579,7 +579,9 @@ function PendingStrip({
       horizontal
       showsHorizontalScrollIndicator={false}
       style={styles.strip}
-      contentContainerStyle={{ flexDirection: dir.row, paddingHorizontal: 12, paddingTop: 12 }}
+      // `gap`, not a `marginEnd` per item: that resolves against the HOST's
+      // direction, which an RTL chat in an LTR app does not share.
+      contentContainerStyle={{ flexDirection: dir.row, paddingHorizontal: 12, paddingTop: 12, gap: 8 }}
     >
       {pending.map((p, i) => {
         const uri = previewUriFor(p);
@@ -613,8 +615,9 @@ function PendingStrip({
               style={[
                 styles.removeBadgeHit,
                 // Sits on the tile's TRAILING corner, so it mirrors with the
-                // strip rather than covering the picture's leading edge.
-                dir.isRtl ? { left: -12 } : { right: -12 },
+                // strip rather than covering the picture's leading edge — in
+                // the chat's direction, whatever the host app's is.
+                insetEnd(dir.direction, -12),
               ]}
               hitSlop={6}
             >
@@ -748,15 +751,18 @@ function RecordingBar({
       </Text>
 
       {!paused ? (
-        <Pressable
-          onPress={onPause}
-          accessibilityRole="button"
-          accessibilityLabel={strings.t('pauseVoice')}
-          hitSlop={8}
-          style={{ paddingStart: 6 }}
-        >
-          <PauseIcon color={theme.text} size={22} />
-        </Pressable>
+        // A spacer, not `paddingStart`, which follows the host's direction.
+        <>
+          <View style={{ width: 6 }} />
+          <Pressable
+            onPress={onPause}
+            accessibilityRole="button"
+            accessibilityLabel={strings.t('pauseVoice')}
+            hitSlop={8}
+          >
+            <PauseIcon color={theme.text} size={22} />
+          </Pressable>
+        </>
       ) : null}
     </View>
   );
@@ -1449,7 +1455,7 @@ const styles = StyleSheet.create({
   errorBanner: { paddingHorizontal: 16, paddingVertical: 8 },
   errorText: { color: ERROR_COLOR, fontSize: 12 },
   strip: { maxHeight: 80 },
-  stripItem: { width: 56, height: 56, marginEnd: 8, marginBottom: 8 },
+  stripItem: { width: 56, height: 56, marginBottom: 8 },
   pendingChip: {
     width: 56,
     height: 56,

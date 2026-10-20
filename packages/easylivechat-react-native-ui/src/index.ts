@@ -85,6 +85,7 @@ export {
   EasyLiveChatLauncher,
 } from './launcher';
 export { type EasyLiveChatScreenProps, EasyLiveChatScreen } from './chat-screen';
+export { type EasyLiveChatHelpScreenProps, EasyLiveChatHelpScreen } from './help-screen';
 export {
   type EasyLiveChatEndChatButtonProps,
   type EndChatDialogProps,
@@ -105,6 +106,18 @@ export {
   ClosedNoticeView,
 } from './views/closed-notice-view';
 export { type ElcImageViewerProps, ElcImageViewer } from './views/image-viewer';
+export {
+  type ElcHelpApi,
+  type HelpViewProps,
+  HelpView,
+  helpArticleDirection,
+} from './views/help-view';
+export {
+  type ElcOpenLink,
+  type HelpMarkdownViewProps,
+  HelpMarkdownView,
+  openHelpLink,
+} from './views/help-markdown-view';
 export { type RemoteImageProps, RemoteImage } from './views/remote-image';
 export {
   type ElcLinkKind,

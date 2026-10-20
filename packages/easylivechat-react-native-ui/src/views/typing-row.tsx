@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { Animated, Easing, StyleSheet, View } from 'react-native';
 
-import { useDirectionStyles } from '../direction';
+import { bubbleRadii, useDirectionStyles } from '../direction';
 import { type EasyLiveChatTheme, withAlpha } from '../theme';
 
 /**
@@ -47,15 +47,15 @@ export function TypingRow({
           {
             backgroundColor: theme.surface,
             borderColor: withAlpha(theme.text, 0.08),
-            // Logical corners so the tail hugs the leading edge in RTL too.
-            borderTopStartRadius: 16,
-            borderTopEndRadius: 16,
-            borderBottomEndRadius: 16,
-            borderBottomStartRadius: 4,
+            // The team's outline, tail on the leading edge in the CHAT's
+            // direction — the same corners as the bubble it stands in for.
+            ...bubbleRadii(dir.direction, false),
           },
         ]}
       >
-        <View style={{ flexDirection: dir.row, alignItems: 'center' }}>
+        {/* `gap`, not a `marginStart` per dot: that follows the HOST's
+            direction, so in an RTL chat inside an LTR app two dots touched. */}
+        <View style={{ flexDirection: dir.row, alignItems: 'center', gap: 5 }}>
           {[0, 1, 2].map((i) => (
             <Dot key={i} index={i} progress={progress} theme={theme} />
           ))}
@@ -93,7 +93,6 @@ function Dot({
       style={[
         styles.dot,
         {
-          marginStart: index > 0 ? 5 : 0,
           backgroundColor: withAlpha(theme.text, 0.45),
           transform: [{ translateY }],
         },
