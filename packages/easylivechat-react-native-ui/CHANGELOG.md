@@ -7,6 +7,143 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-10-21
+
+Requires `@easylivechat/react-native` ^0.1.6 (the visitor emails, the emailed
+link, `setPushToken` as a no-op). The first release on npm since 0.1.7: it
+includes everything listed under 0.1.8, which was never published.
+
+### Added
+
+- **Email me this chat.** The web widget's `EmailCard`, inline above the
+  thread — never a modal — opened from an envelope beside the app bar's ×
+  (`showAppBar`) once the conversation has something in it: a one-tap
+  confirmation naming the address on file, masked, with "Use another address",
+  or the field when there is none. It says in place what happened — "Sent to
+  …", then gets out of the way after four seconds — or why not, in the
+  widget's words: an invalid or missing address, an unsubscribed one, asked
+  too often. On the screen after the chat, a row above the survey offers it
+  for the conversation that just ended (at the top, so the keyboard never
+  covers the field). For a host's own header:
+  `EasyLiveChatEmailTranscriptButton`, or `useEmailTranscriptOffer()` —
+  `{ available, open }` — for one that takes a callback.
+- **Get the reply by email.** Asked by the widget's rule: once per
+  conversation, after the visitor has written while nobody can answer —
+  closed, waiting in the queue, or nobody accepting — only of someone whose
+  contact has no address, never while the workspace takes no messages. It
+  stays until answered ("We'll email … if you've left by the time we reply")
+  or put away ("Not now"). Both offers only while their switch is on.
+  `EmailCard`, `ChatEmailOffers`, `AfterChatEmailOffer`, `EMAIL_CARD_PATTERN`.
+- **The whole emoji picker, with search.** The quick reaction row's + opens it
+  in a sheet on the page's ground: a search over the emoji's English names
+  matched as the widget matches (`searchEmoji`, ported from
+  `packages/shared` with its tests — every word typed must start one of the
+  emoji's words, an exact word first, then the table's order; an emoji typed
+  or pasted finds itself; the keyboard's Search picks the first match), the
+  category tabs, the device's recently used first (for this run of the app,
+  as the Flutter UI keeps them), each row filled from the chat's own start.
+  The same 1805 emoji in the same order as the web's — the shared table,
+  checked byte for byte inside the monorepo. A pick goes through
+  `toggledReaction`, so the visitor's own emoji again takes it back.
+  `EmojiPicker`, `EmojiPickerSheet`, `emojiCatalog`, `defaultEmojiCatalog`,
+  `EMOJI_CATEGORIES`, `EMOJI_CATEGORY_ICON`, `recentEmoji`, `addRecentEmoji`.
+- `MailIcon`.
+- 28 new strings in all 13 languages, worded as the web widget's (Badini
+  written for this release): `emailTranscript`, `emailSendTo`, `emailOther`,
+  `emailSentTo`, `emailFailed`, `emailRateLimited`, `emailUnsubscribed`,
+  `cancel`, `notifyTitle`, `notifyBody`, `notifyButton`, `notifySaved`,
+  `notifyDismiss`, `moreReactions`, `emojiSearch`, `emojiNoResults`,
+  `emojiResults`, `emojiCategories` and the ten category names
+  (`emojiRecent` … `emojiFlags`).
+
+### Changed
+
+- The quick reaction row's buttons are 34 points (were 36) so the + fits
+  beside an avatar, and give a little rather than spill out of the narrowest
+  columns.
+
+## [0.1.8] - 2026-10-20
+
+Never published to npm; released as part of 0.1.9.
+
+Requires `@easylivechat/react-native` ^0.1.5 (reactions, link previews, the
+widget's look, the business's own closed notice and the queue).
+
+What the web widget gained on 2026-10-17/18 that a visitor sees, drawn the way
+the widget draws it.
+
+### Added
+
+- **Reactions.** Chips under any bubble that has reactions — the visitor's own
+  on the team's messages, the team's on theirs — one per emoji with a count,
+  from the sender's side, mirrored in RTL; the visitor's own is ringed in the
+  accent and tapping it takes it back. A long press on one of the team's
+  messages (or the bubble's "React" accessibility action, so a screen reader
+  keeps the bubble as the one element it was, links and all) opens the quick
+  six — 👍 ❤️ 😂 😮 😢 🙏 — in place under it, on the page's own ground rather
+  than a popover, the visitor's own marked; picking one reacts (picking theirs
+  again takes it back) and closes the row, and only one is open at a time.
+  Offered while the socket is up and the workspace takes messages, as the
+  widget does; the thread shows a reaction at once and the core puts it back
+  if the server refuses. `ReactionChips`, `QuickReactionRow`; `MessageBubble`
+  takes `onReact`, `reacting` and `onToggleReactions`, and `LinkifiedText`
+  `a11yActions`. Three new strings in all 13 languages, worded as the widget's:
+  `react`, `yourReaction`, `teamReaction`.
+- **Link previews.** The server's card under a message with a link in it —
+  the site, the page's title, a line of its description and its picture —
+  on the card surface whichever side sent it, the thumbnail at the chat's
+  leading edge and every line facing the way its own text reads. Tapping it
+  opens the page (http/https only, checked again at the door); a picture that
+  will not load goes, and takes its gap with it (`RemoteImage` gained
+  `onFailed`). Never under a card; drawn while the workspace's `linkPreviews`
+  is on. `LinkPreviewCard`; `MessageBubble` takes `showLinkPreview`.
+- **Dark mode.** The workspace's `colorScheme`: `light` is the look the SDK
+  always drew, unchanged; `dark` is derived from the same colours as the web
+  widget derives it (`widgetPalette`) — the brand stays on the launcher, the
+  visitor's bubble and the send button, the light surfaces become its dark
+  ground and card tinted toward the brand, text goes light unless the tenant's
+  own reads at 7:1, a workspace that already designed a dark theme keeps it —
+  and `auto` follows the device's appearance, live (`useColorScheme`). Every
+  view follows: bubbles, composer, forms, help, cards, notices, the launcher,
+  the end-chat dialog. Where the brand is ink rather than fill — links,
+  outlined chips, the read ticks, the AI badge, stars and radios — it is
+  `theme.primaryInk`, nudged until it reads at 4.5:1 on the dark card
+  (`inkOf`, `inkOn`); the destructive red becomes the widget's dark one
+  (`errorColorOf`, `ERROR_COLOR_DARK`); text fields get the dark keyboard on
+  iOS (`keyboardAppearance`). A host's explicit theme still wins: every colour
+  on `themeOverride` as before, `themeOverride.scheme` pins the scheme, and an
+  override that paints the surfaces itself decides it from its own colours,
+  so the gaps are filled from the same one. `useEasyLiveChatTheme(config,
+  override?, direction?)` is what every screen resolves through;
+  `themeFromConfig` takes the device's scheme as a third argument;
+  `EasyLiveChatTheme` gained `scheme` and `primaryInk` (both optional on a
+  hand-built theme); `mixColors`, `contrastRatio`.
+- **The queue notice.** While the visitor waits for a person: a "Queue"
+  kicker, the workspace's own notice (filled in by the server, drawn verbatim
+  and facing its own way) and their place and wait — "#2 · about 5 min" — above
+  a thread they can still read and write in, gone the moment anyone from the
+  team is there. `QueueNotice`. Two new strings in all 13 languages:
+  `queueKicker` (the widget's) and `queueMeta`.
+- **The launcher's options.** Its size from Widget settings (48, 56 or 64
+  points) and its words: with a `launcherLabel` it is the pill the web loader
+  draws — the icon, then "Chat with us" in the visitor's language, running
+  right-to-left for an RTL workspace — and the words are its screen-reader
+  label too.
+
+### Changed
+
+- **The closed / busy notice follows the web widget's rule exactly**
+  (`closedBannerText`), on the banner AND the full closed screen — one
+  function, `closedNoticeText`: the business's own notice (`offlineInfoText`,
+  Settings → Availability) always wins; without one, the assistant's wording
+  while it covers, ours otherwise; with the composer locked nothing invites a
+  message — the reopening time is the notice, else "we'll be back soon"; the
+  reopening time stays after the closed notice either way, and a named
+  holiday still says so. Before, the banner set the tenant's copy aside for
+  the assistant notice, and the full screen never showed the assistant's at
+  all — both read `offlineMessage`, the leave-a-message prompt, whose schema
+  default nobody typed.
+
 ## [0.1.7] - 2026-10-19
 
 Requires `@easylivechat/react-native` ^0.1.4 (identity verification, help

@@ -7,6 +7,135 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-10-21
+
+The first release on npm since 0.1.4: it includes everything listed under
+0.1.5, which was never published.
+
+### Added
+
+- **Emails to the visitor.** The web widget's "Get the reply by email" next to
+  0.1.5's "Email me this chat", over the same endpoints:
+  `EasyLiveChat.instance.visitorEmail()` — `GET /:slug/visitor-email`, a
+  `VisitorEmailState`: the address on the visitor's contact, masked
+  (`j•••@example.com`) or null, `unsubscribed`, and whether each email is on
+  offer — and `setVisitorEmail(email)` — `POST /:slug/visitor-email`, the
+  address kept on the contact for a reply that comes after the visitor has
+  left; resolves `{ emailHint }` (`VisitorEmailResult`), rejects
+  `INVALID_EMAIL` (a blank one before the network) or `EMAIL_UNSUBSCRIBED`.
+  Offer it while `replyEmailEnabled` is true — the store,
+  `useReplyEmailEnabled()` and `ConfigResponse.replyEmailEnabled`, false from
+  an older server. `RestClient.getVisitorEmail` / `postVisitorEmail`,
+  `parseVisitorEmailState`.
+- **Resume from an emailed link.** `resumeFromLink(link)` follows the "Reply
+  in the chat" link in those emails: the email's `…#elc_chat=<token>`, our
+  chat page's `…#resume=<token>`, or the bare token, its JWT shape checked as
+  the widget's `readResumeToken` checks it. The token is traded over
+  `POST /:slug/resume-link` for the visitor id that reaches the conversation,
+  adopted as the widget's `adoptVisitorId` adopts it (the cached profile goes
+  with the old id; an identity the host declared stays), and the ordinary open
+  resumes the chat. Resolves true once that chat is the open session; false —
+  never throwing, and changing nothing — for a link that is not ours
+  (answered at once, with no request), a token the server refuses, or no
+  network. A visitor identified with a `userId` only follows a link to the
+  chat this device already holds: resumed under their verified identity,
+  someone else's conversation would become theirs. Held until `boot()` when
+  called before it (the deep link that launched the app); `reset()` drops a
+  held one. `resumeLinkToken(url)` says synchronously whether a URL carries a
+  token. `RestClient.postResumeLink`. The README shows the expo-router and
+  React Navigation wiring.
+
+### Changed
+
+- `emailTranscript({ email })` takes an options object, as the Flutter SDK
+  does; a plain string (0.1.5's spelling) still reads as `{ email }`. On the
+  screen after the chat it, and `visitorEmail()`, reach the conversation that
+  just ended with the token minted for it — without the re-mint that would
+  resume, and so re-open, the closed chat.
+
+### Deprecated
+
+- **`setPushToken()` is a no-op.** Workspaces no longer hand us their Firebase
+  credentials, so the SDK has no device to register: notifying your app's
+  users is your own server's job, driven by the workspace's `message.created`
+  webhook — for a reply from the team (`senderType` `AGENT` or `BOT`) whose
+  `contact.userId` is set, send your own push to that user's devices. The
+  signature stays so an app that calls it keeps compiling; nothing is sent and
+  nothing is stored. `EasyLiveChatPush` likewise (`isSupported` is false). The
+  README's "Notifications" has the recipe, signature check included.
+
+### Removed
+
+- The push registration plumbing: `RestClient.registerPush` /
+  `unregisterPush`, `RegisterPushArgs`, the held and queued device token, and
+  the unregister that an identity switch and `reset()` used to send.
+
+## [0.1.5] - 2026-10-20
+
+Never published to npm; released as part of 0.1.6.
+
+What the web widget gained on 2026-10-17/18 that a visitor can see, over the
+same protocol — no server changes.
+
+### Added
+
+- **Reactions.** `message.reactions` carries the visitor's view of a
+  message's reactions — their own on the team's messages, the team's on
+  theirs, never an agent's name — from history, `message:new` /
+  `message:updated`, and live from `message:reactions` with the whole list
+  after each change (`WidgetSocketHandlers.onMessageReactions`, optional).
+  `EasyLiveChat.instance.react(messageId, emoji | null)` reacts to one of the
+  team's messages over `message:react`, or takes the visitor's reaction back:
+  shown at once, put back if the server refuses, the server's list taken as
+  final; resolves whether it held, never rejects. One reaction per message, as
+  on WhatsApp. `QUICK_REACTIONS` (the quick six every client offers),
+  `reactionsOf`, `myReaction`, `toggledReaction` (a tap → set or take back),
+  `canReactTo` (the team's messages, once the server has them),
+  `groupReactions` (one chip per emoji, ❤ and ❤️ as one), `withMyReaction`,
+  `sameEmoji`, `sameReactions`, `parseReactions`. An update that carries no
+  list — an older server, a partial row — keeps the reactions on screen
+  (`withReactionsFrom`); `[]` is the last one taken back. A reaction is not a
+  message: no unread count, no `onMessage`.
+- **Link previews.** `linkPreviewOf(message)` reads the preview the server
+  made for a link in a message (`metadata.linkPreview`, usually on the
+  `message:updated` a moment after the message) through a port of the shared
+  parser: http(s) links only, the picture the server's own upload or https,
+  every field one line and capped. `parseLinkPreview`, `isSafePreviewImage`,
+  `previewHost`, `LINK_PREVIEW_LIMITS`. `WidgetConfig.linkPreviews` is the
+  workspace's switch (on when an older server says nothing).
+- **The widget's look.** `WidgetConfig.colorScheme` — `light`, `dark` or
+  `auto` (follow the device); `light` when the server says nothing, so no
+  look changes by itself — with `resolveColorScheme(choice, deviceDark)`.
+  `WidgetConfig.launcherSize` (`small` | `medium` | `large`, `LAUNCHER_PX`
+  48/56/64) and `launcherLabel` (the words beside the launcher's icon, one
+  line, at most `LAUNCHER_LABEL_MAX` = 40).
+- **The business's own closed notice.** `WidgetConfig.offlineInfoText` — the
+  notice written in Settings → Availability, in the visitor's language, or
+  undefined when none was written. It is what the closed/busy notice shows
+  when set; `offlineMessage` stays the leave-a-message prompt it always was.
+- **Waiting in the queue.** The `queue` store (`useQueueStatus()`) —
+  `{ position, minutes, text }` while the visitor waits for a person, the
+  text filled in by the server — from the session response (`queued`,
+  `queuePosition`, `queueMinutes`, `queueInfoText`; `SessionResult.queue`)
+  and `queue:update`. Cleared the moment anyone from the team is there —
+  `conversation:assigned`, `queue:update { assigned }`, a team or assistant
+  message, someone typing — as the widget's `leavesQueue` does; never carried
+  to the next person on the device. `WidgetSocketHandlers.onQueueUpdate` /
+  `onConversationAssigned` (optional), `parseQueueUpdate`.
+- **Email me this chat.** `EasyLiveChat.instance.emailTranscript(email?)`
+  over `POST /:slug/conversations/:id/transcript` — to `email`, or to the
+  address the contact already has — resolving with where it went, masked
+  (`TranscriptResult`). Rejects with the server's code: `NO_CONTACT_EMAIL`,
+  `INVALID_EMAIL`, `EMAIL_UNSUBSCRIBED`, `TRANSCRIPT_RATE_LIMITED`. Offer it
+  while `transcriptEmailEnabled` is true (the store, `useTranscriptEmailEnabled()`
+  and `ConfigResponse.transcriptEmailEnabled`; false from an older server).
+  `RestClient.postTranscript`.
+
+### Changed
+
+- `isSafeCardUrl` shares its http(s) check with link previews; what it
+  accepts is unchanged.
+
 ## [0.1.4] - 2026-10-19
 
 ### Added

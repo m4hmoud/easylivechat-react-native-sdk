@@ -1,4 +1,4 @@
-import type { WidgetConfig } from '@easylivechat/react-native';
+import { type WidgetConfig, resolveColorScheme } from '@easylivechat/react-native';
 
 /**
  * Resolved theme for the EasyLiveChat UI.
@@ -25,6 +25,20 @@ export interface EasyLiveChatTheme {
   logoUrl?: string;
   /** Optional launcher-bubble icon (absolute URL); falls back to a chat glyph. */
   bubbleIconUrl?: string;
+  /**
+   * Which appearance these colours are for. {@link themeFromConfig} always
+   * sets it — from the workspace's `colorScheme` and the device — and a host
+   * override may pin it. Undefined on a hand-built theme, which reads as
+   * light. Decides what only the scheme can: the keyboard's appearance.
+   */
+  scheme?: 'light' | 'dark';
+  /**
+   * The brand as INK — links, outlined chips, the read ticks, icons on a
+   * surface — where {@link primary} is the brand as a FILL. The same colour in
+   * light; in dark nudged lighter until it reads on the dark surface, the way
+   * the web widget's `--widget-accent-ink` is. Read it with {@link inkOf}.
+   */
+  primaryInk?: string;
 }
 
 /** What the UI paints before the server config has arrived. */
@@ -34,10 +48,19 @@ export const FALLBACK_THEME: EasyLiveChatTheme = {
   surface: '#F1F5F9',
   text: '#0F172A',
   direction: 'ltr',
+  scheme: 'light',
 };
 
 /** Destructive red, shared by validation, failed sends and error banners. */
 export const ERROR_COLOR = '#DC2626';
+
+/** The same red on a dark chat — the web widget's dark `--color-danger`, which reads there. */
+export const ERROR_COLOR_DARK = '#F87171';
+
+/** The destructive red for this theme. */
+export function errorColorOf(theme: Pick<EasyLiveChatTheme, 'scheme'> | null | undefined): string {
+  return theme?.scheme === 'dark' ? ERROR_COLOR_DARK : ERROR_COLOR;
+}
 
 interface Rgba {
   r: number;
@@ -137,8 +160,88 @@ export function deriveSurface(background: string): string {
   return toCss({ r: shift(parsed.r), g: shift(parsed.g), b: shift(parsed.b), a: parsed.a });
 }
 
+// ── colour maths for dark (packages/shared widget-theme.ts) ─────────────────
+
+/** `a` moved `t` (0…1) of the way toward `b`, in sRGB. Unparseable input returns `a` as given. */
+export function mixColors(a: string, b: string, t: number): string {
+  const x = parseHexColor(a);
+  const y = parseHexColor(b);
+  if (x == null || y == null) return a;
+  const mix = (p: number, q: number): number => Math.round(Math.min(255, Math.max(0, p + (q - p) * t)));
+  return toCss({ r: mix(x.r, y.r), g: mix(x.g, y.g), b: mix(x.b, y.b), a: 1 });
+}
+
+/** WCAG contrast ratio, 1…21. */
+export function contrastRatio(a: string, b: string): number {
+  const la = luminance(a);
+  const lb = luminance(b);
+  const [hi, lo] = la > lb ? [la, lb] : [lb, la];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/**
+ * `color` itself when it already reads at `ratio` against `ground`; otherwise
+ * the least step toward white (on a dark ground) or near-black (on a light
+ * one) that does. A brand blue that reads stays exactly the brand blue.
+ */
+export function inkOn(color: string, ground: string, ratio: number): string {
+  if (parseHexColor(color) == null || parseHexColor(ground) == null) return color;
+  if (contrastRatio(color, ground) >= ratio) return color;
+  const toward = luminance(ground) > 0.5 ? '#111827' : '#FFFFFF';
+  for (let step = 1; step <= 20; step++) {
+    const next = mixColors(color, toward, step / 20);
+    if (contrastRatio(next, ground) >= ratio) return next;
+  }
+  return toward;
+}
+
+/**
+ * The iOS keyboard for a field on this theme: dark on a dark chat. A light
+ * chat leaves it to the system, as it always did.
+ */
+export function keyboardAppearance(theme: EasyLiveChatTheme): 'dark' | 'default' {
+  return theme.scheme === 'dark' ? 'dark' : 'default';
+}
+
+/** The brand as ink — {@link EasyLiveChatTheme.primaryInk}, or the brand itself on a hand-built theme. */
+export function inkOf(theme: EasyLiveChatTheme): string {
+  return theme.primaryInk ?? theme.primary;
+}
+
+/** The web widget's own dark ground and card, before the brand tint, and its text. */
+const DARK_GROUND = '#121316';
+const DARK_CARD = '#1E1F23';
+const DARK_TEXT = '#ECEDEF';
+/** How far the dark surfaces lean toward the brand: enough to feel theirs, not enough to colour the text. */
+const BRAND_TINT = 0.05;
+/** A background a tenant has already made dark is their dark theme: kept, not replaced. */
+const DARK_THEME_LUMINANCE = 0.2;
+
 /**
  * Build a theme from the server config.
+ *
+ * LIGHT is the look the SDK has always drawn — the tenant's own colours —
+ * whatever the workspace's `colorScheme` says, so a workspace still on
+ * `light` (every one that existed before dark mode) sees no change at all.
+ *
+ * DARK is DERIVED from the same colours, never asked for twice, exactly as
+ * the web widget derives it (`widgetPalette`, packages/shared
+ * widget-theme.ts): the brand stays where a visitor sees it — the launcher,
+ * the visitor's bubble, the send button — and the light surfaces become the
+ * widget's own dark ground and card, tinted a little toward the brand. Text
+ * becomes light unless the tenant's own reads at 7:1 on the card. A workspace
+ * whose own background is already dark designed a dark widget: its colours
+ * are kept. Where the brand is INK (links, outlined chips) it is nudged
+ * lighter until it reads at 4.5:1 — {@link EasyLiveChatTheme.primaryInk}.
+ *
+ * Which one: the workspace's `colorScheme` — `auto` follows `deviceScheme`
+ * (React Native's `useColorScheme()`; `useEasyLiveChatTheme` passes it) —
+ * unless the host's override says. A host's explicit theme still wins:
+ * `override.scheme` pins the scheme, and an override that paints the surfaces
+ * itself (`background`, `surface` or `text`) is taken at its word — its
+ * scheme is read off its own colours, so the gaps are filled from the same
+ * one rather than a dark card under a host's white page. Every colour on the
+ * override wins as before.
  *
  * `direction` is deliberately NOT taken from the override: layout direction is
  * a function of locale and content, not branding, and always follows the
@@ -146,44 +249,112 @@ export function deriveSurface(background: string): string {
  * `direction` would default to LTR) silently forces an RTL workspace to LTR.
  * Hosts that genuinely need to force it get an explicit `directionOverride`
  * prop on the screen and the launcher.
+ *
+ * Before the config arrives the fallback is light: almost every workspace is,
+ * and the spinner it covers is up for a moment.
  */
 export function themeFromConfig(
   config: WidgetConfig | null,
   override?: Partial<EasyLiveChatTheme>,
+  deviceScheme?: string | null,
 ): EasyLiveChatTheme {
+  const pinned = hostScheme(override);
   if (config == null) {
-    return {
-      ...FALLBACK_THEME,
-      ...stripDirection(override),
-      // Even with no config, an override's direction is not authoritative —
-      // same rule as below.
-      direction: FALLBACK_THEME.direction,
-    };
+    const scheme = pinned ?? 'light';
+    return finish(
+      {
+        ...FALLBACK_THEME,
+        ...(scheme === 'dark' ? darkSurfaces(FALLBACK_THEME.primary, null, null) : {}),
+        ...stripLayout(override),
+        // Even with no config, an override's direction is not authoritative —
+        // same rule as below.
+        direction: FALLBACK_THEME.direction,
+        scheme,
+      },
+      override,
+    );
   }
+  const scheme =
+    pinned ?? resolveColorScheme(config.colorScheme, deviceScheme === 'dark');
+  const primary = normalizeColor(config.primaryColor, FALLBACK_THEME.primary);
   const background = normalizeColor(config.backgroundColor, FALLBACK_THEME.background);
+  const text = normalizeColor(config.textColor, FALLBACK_THEME.text);
   const base: EasyLiveChatTheme = {
-    primary: normalizeColor(config.primaryColor, FALLBACK_THEME.primary),
+    primary,
     background,
     surface: deriveSurface(background),
-    text: normalizeColor(config.textColor, FALLBACK_THEME.text),
+    text,
     direction: config.direction === 'rtl' ? 'rtl' : 'ltr',
     logoUrl: config.logoUrl,
     bubbleIconUrl: config.bubbleIconUrl,
+    scheme,
+    ...(scheme === 'dark' ? darkSurfaces(primary, background, text) : {}),
   };
-  if (override == null) return base;
-  return {
-    ...base,
-    ...stripDirection(override),
-    logoUrl: override.logoUrl ?? base.logoUrl,
-    bubbleIconUrl: override.bubbleIconUrl ?? base.bubbleIconUrl,
-    direction: base.direction,
-  };
+  if (override == null) return finish(base, undefined);
+  return finish(
+    {
+      ...base,
+      ...stripLayout(override),
+      logoUrl: override.logoUrl ?? base.logoUrl,
+      bubbleIconUrl: override.bubbleIconUrl ?? base.bubbleIconUrl,
+      direction: base.direction,
+      scheme,
+    },
+    override,
+  );
 }
 
-function stripDirection(
+/**
+ * The dark ground, card and text for a tenant's colours. `own*` null means
+ * "no tenant colour" (before the config arrives).
+ */
+function darkSurfaces(
+  primary: string,
+  ownBackground: string | null,
+  ownText: string | null,
+): Pick<EasyLiveChatTheme, 'background' | 'surface' | 'text'> {
+  const tenantDark =
+    ownBackground != null &&
+    parseHexColor(ownBackground) != null &&
+    luminance(ownBackground) < DARK_THEME_LUMINANCE;
+  const background = tenantDark ? ownBackground : mixColors(DARK_GROUND, primary, BRAND_TINT);
+  const surface = tenantDark ? deriveSurface(ownBackground) : mixColors(DARK_CARD, primary, BRAND_TINT);
+  const text =
+    ownText != null && parseHexColor(ownText) != null && contrastRatio(ownText, surface) >= 7
+      ? ownText
+      : DARK_TEXT;
+  return { background, surface, text };
+}
+
+/** The ink, worked out from the colours as they finally stand — host overrides included. */
+function finish(
+  theme: EasyLiveChatTheme,
+  override: Partial<EasyLiveChatTheme> | undefined,
+): EasyLiveChatTheme {
+  const primaryInk =
+    override?.primaryInk ??
+    (theme.scheme === 'dark' ? inkOn(theme.primary, theme.surface, 4.5) : theme.primary);
+  return { ...theme, primaryInk };
+}
+
+/**
+ * The scheme a host override decides: its own `scheme`, else the one its own
+ * surface colours are for. Undefined when it says nothing about surfaces — a
+ * brand colour alone leaves the scheme to the workspace and the device.
+ */
+function hostScheme(override: Partial<EasyLiveChatTheme> | undefined): 'light' | 'dark' | undefined {
+  if (override == null) return undefined;
+  if (override.scheme === 'light' || override.scheme === 'dark') return override.scheme;
+  const ground = [override.background, override.surface].find((c) => parseHexColor(c) != null);
+  if (ground != null) return luminance(ground) < 0.5 ? 'dark' : 'light';
+  if (parseHexColor(override.text) != null) return luminance(override.text!) > 0.5 ? 'dark' : 'light';
+  return undefined;
+}
+
+function stripLayout(
   override: Partial<EasyLiveChatTheme> | undefined,
 ): Partial<EasyLiveChatTheme> {
   if (override == null) return {};
-  const { direction: _ignored, ...rest } = override;
+  const { direction: _ignored, scheme: _scheme, primaryInk: _ink, ...rest } = override;
   return rest;
 }

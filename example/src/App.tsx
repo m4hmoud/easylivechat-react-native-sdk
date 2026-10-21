@@ -4,6 +4,7 @@ import {
   EasyLiveChatLauncher,
   EasyLiveChatScreen,
   SecureAsyncStorage,
+  resumeLinkToken,
   setUuidGenerator,
   useConnectionState,
   useEasyLiveChatPhase,
@@ -175,9 +176,21 @@ export default function App(): React.JSX.Element {
    *   easylivechatexample://reset
    *   easylivechatexample://locale?code=ckb
    *   easylivechatexample://identify?name=Ada&email=ada@example.com
+   *
+   * And an emailed "Reply in the chat" link — any URL carrying its
+   * `#elc_chat=<token>` (or `#resume=`), e.g. your own site's universal link,
+   * or `easylivechatexample://chat#elc_chat=<token>` — opens the conversation
+   * the email was about.
    */
   const handleUrl = useCallback(
     (url: string) => {
+      if (resumeLinkToken(url) != null) {
+        void EasyLiveChat.instance.resumeFromLink(url).then((ok) => {
+          append(`resumeFromLink → ${String(ok)}`);
+          if (ok) setScreenOpen(true);
+        });
+        return;
+      }
       // Parsed by hand against RN's own `Linking`: `expo-linking` is a native
       // module, and a scheme this simple does not justify one.
       const [head, query = ''] = url.split('://')[1]?.split('?') ?? [];

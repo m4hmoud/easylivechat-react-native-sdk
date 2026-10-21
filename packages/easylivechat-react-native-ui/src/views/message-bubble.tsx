@@ -8,11 +8,13 @@ import {
   isFromAssistant,
   isFromCustomer,
   isResolvableUrl,
+  linkPreviewOf,
   messageCardsOf,
   postChatSubmission,
   receiptFor,
   systemI18nKey,
   systemI18nParam,
+  toggledReaction,
 } from '@easylivechat/react-native';
 import React, { useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
@@ -28,9 +30,11 @@ import {
   StarIcon,
 } from '../icons';
 import type { Strings } from '../l10n';
-import { ERROR_COLOR, type EasyLiveChatTheme, onColor, withAlpha } from '../theme';
+import { type EasyLiveChatTheme, errorColorOf, inkOf, onColor, withAlpha } from '../theme';
 import { LinkifiedText } from './linkified-text';
+import { LinkPreviewCard } from './link-preview-card';
 import { CardCarousel, CardView, ReplyChips } from './message-extras-view';
+import { QuickReactionRow, ReactionChips } from './reactions-view';
 import { RemoteImage } from './remote-image';
 import { VoiceNoteTile, looksLikeAudio } from './voice-note-tile';
 import { MAX_FONT_SCALE } from '../text-scaling';
@@ -61,7 +65,30 @@ export interface MessageBubbleProps {
   chosenButtonId?: string | null;
   /** Answers with one of its reply buttons: the id and the label to send. Null draws them disabled. */
   onButton?: ((id: string, label: string) => void) | null;
+  /**
+   * Draw the preview card under a link in this message (`linkPreviewOf`) —
+   * the workspace's `linkPreviews` switch. Default true: a preview only exists
+   * where the server made one.
+   */
+  showLinkPreview?: boolean;
+  /**
+   * Set while the visitor may react to this message (`canReactTo`, and a live
+   * connection): the emoji to set, or `null` to take theirs back. Their own
+   * chip then takes it back too. Null or absent, reactions show as labels
+   * only.
+   */
+  onReact?: ((emoji: string | null) => void) | null;
+  /** The quick row is open under this message. */
+  reacting?: boolean;
+  /**
+   * Opens or closes the quick row — a long press on the bubble, or the
+   * "React" accessibility action. The thread keeps one open at a time.
+   */
+  onToggleReactions?: (() => void) | null;
 }
+
+/** How long a touch must hold on a bubble to open the quick row (the widget's 450 ms). */
+const LONG_PRESS_MS = 450;
 
 /**
  * A single message row.
@@ -143,7 +170,7 @@ function SystemRow({
         <Text
           style={[
             styles.dividerLabel,
-            { color: started ? theme.primary : withAlpha(theme.text, 0.55) },
+            { color: started ? inkOf(theme) : withAlpha(theme.text, 0.55) },
           ]}
         >
           {label}
@@ -186,6 +213,10 @@ function ChatBubble({
   showButtons = false,
   chosenButtonId = null,
   onButton = null,
+  showLinkPreview = true,
+  onReact = null,
+  reacting = false,
+  onToggleReactions = null,
   dir,
 }: MessageBubbleProps & { dir: DirectionStyles }): React.JSX.Element {
   const customer = isFromCustomer(message);
@@ -251,6 +282,21 @@ function ChatBubble({
   );
 
   const receipt = receiptFor(message, agentLastReadAt);
+  // A card message draws its cards instead; `linkPreviewOf` says so.
+  const preview = showLinkPreview ? linkPreviewOf(message) : null;
+  const canReact = onReact != null && onToggleReactions != null;
+  // On the bubble's own words, for a screen reader: the bubble stays the one
+  // element it was (its links still reachable), with "React" among its
+  // actions. A long press is how everyone else opens the row.
+  const reactActions = canReact
+    ? {
+        accessibilityActions: [{ name: 'react', label: strings.t('react') }],
+        onAccessibilityAction: (e: { nativeEvent: { actionName: string } }) => {
+          if (e.nativeEvent.actionName === 'react') onToggleReactions?.();
+        },
+      }
+    : undefined;
+  const bubbleMaxWidth = withAvatar ? '84%' : '92%';
 
   const column = (
     <View style={{ alignItems: customer ? dir.alignEnd : dir.alignStart, flexShrink: 1 }}>
@@ -282,6 +328,10 @@ function ChatBubble({
         </Text>
       ) : null}
 
+      <LongPressToReact
+        onLongPress={canReact ? onToggleReactions : null}
+        maxWidth={cards.length > 0 ? undefined : bubbleMaxWidth}
+      >
       {cards.length > 1 ? (
         <CardCarousel
           cards={cards}
@@ -303,7 +353,10 @@ function ChatBubble({
         style={[
           styles.bubble,
           {
-            maxWidth: withAvatar ? '84%' : '92%',
+            // The long-press wrapper holds the cap when there is one: a
+            // percentage of an auto-sized wrapper would be a percentage of
+            // itself.
+            maxWidth: canReact ? undefined : bubbleMaxWidth,
             backgroundColor: bareMedia ? 'transparent' : bubbleColor,
             paddingHorizontal: bareMedia ? 0 : 14,
             paddingVertical: bareMedia ? 0 : 10,
@@ -330,7 +383,8 @@ function ChatBubble({
             // background, so a link there keeps the bubble's own foreground and
             // relies on the underline; agent bubbles sit on `surface`, where
             // the accent reads correctly.
-            linkColor={customer ? textColor : theme.primary}
+            linkColor={customer ? textColor : inkOf(theme)}
+            a11yActions={reactActions}
           />
         ) : null}
 
@@ -343,6 +397,23 @@ function ChatBubble({
         ) : null}
       </View>
       )}
+      </LongPressToReact>
+
+      {reacting && canReact ? (
+        <QuickReactionRow
+          message={message}
+          theme={theme}
+          strings={strings}
+          dir={dir}
+          onPick={(emoji) => onReact?.(toggledReaction(message, emoji))}
+          onClose={() => onToggleReactions?.()}
+        />
+      ) : null}
+
+      {/* The link's preview, made by the server — never under a card. */}
+      {preview != null ? (
+        <LinkPreviewCard preview={preview} theme={theme} dir={dir} maxWidth={cardMaxWidth} />
+      ) : null}
 
       {chips ? (
         <ReplyChips
@@ -362,6 +433,14 @@ function ChatBubble({
           dir={dir}
         />
       ) : null}
+
+      <ReactionChips
+        message={message}
+        theme={theme}
+        strings={strings}
+        dir={dir}
+        onTakeBack={canReact ? () => onReact?.(null) : null}
+      />
 
       <MetaRow
         message={message}
@@ -390,6 +469,34 @@ function ChatBubble({
   );
 }
 
+/**
+ * Where a long press opens the quick reactions: around the bubble or the
+ * cards, only while the visitor may react. Not itself an accessible element —
+ * a screen reader keeps the bubble as it was, and finds "React" among its
+ * actions instead.
+ */
+function LongPressToReact({
+  onLongPress,
+  maxWidth,
+  children,
+}: {
+  onLongPress: (() => void) | null;
+  maxWidth?: `${number}%`;
+  children: React.ReactNode;
+}): React.JSX.Element {
+  if (onLongPress == null) return <>{children}</>;
+  return (
+    <Pressable
+      accessible={false}
+      onLongPress={onLongPress}
+      delayLongPress={LONG_PRESS_MS}
+      style={{ maxWidth, flexShrink: 1 }}
+    >
+      {children}
+    </Pressable>
+  );
+}
+
 // ── the AI badge ──────────────────────────────────────────────────────────
 
 /**
@@ -408,9 +515,9 @@ export function AiBadge({
   dir: DirectionStyles;
 }): React.JSX.Element {
   return (
-    <View style={[styles.aiBadge, { backgroundColor: withAlpha(theme.primary, 0.14) }]}>
+    <View style={[styles.aiBadge, { backgroundColor: withAlpha(inkOf(theme), 0.14) }]}>
       {/* Unclamped: the pill has no fixed height, so it grows with the text. */}
-      <Text style={[styles.aiBadgeText, { color: theme.primary, writingDirection: dir.direction }]}>
+      <Text style={[styles.aiBadgeText, { color: inkOf(theme), writingDirection: dir.direction }]}>
         {label}
       </Text>
     </View>
@@ -471,7 +578,13 @@ function MetaRow({
               EasyLiveChat.instance.resend(message)?.serverMessageId.catch(() => '');
             }}
           >
-            <Text maxFontSizeMultiplier={MAX_FONT_SCALE} style={styles.retry}>
+            <Text
+              maxFontSizeMultiplier={MAX_FONT_SCALE}
+              style={[
+                styles.retry,
+                { color: errorColorOf(theme), textDecorationColor: errorColorOf(theme) },
+              ]}
+            >
               {strings.t('sendFailedRetry')}
             </Text>
           </Pressable>
@@ -479,7 +592,7 @@ function MetaRow({
       ) : receipt != null ? (
         <>
           <View style={{ width: 4 }} />
-          <ReceiptTicks receipt={receipt} muted={muted} readColor={theme.primary} strings={strings} />
+          <ReceiptTicks receipt={receipt} muted={muted} readColor={inkOf(theme)} strings={strings} />
         </>
       ) : null}
     </View>
@@ -559,10 +672,10 @@ function AgentAvatar({
         borderRadius: size / 2,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: withAlpha(theme.primary, 0.15),
+        backgroundColor: withAlpha(inkOf(theme), 0.15),
       }}
     >
-      <Text style={{ color: theme.primary, fontSize: 12, fontWeight: '700' }}>{initial}</Text>
+      <Text style={{ color: inkOf(theme), fontSize: 12, fontWeight: '700' }}>{initial}</Text>
     </View>
   );
 
@@ -932,12 +1045,7 @@ const styles = StyleSheet.create({
   // keeps its natural, taller line rather than a Latin-sized one.
   aiBadgeText: { fontSize: 10, fontWeight: '700' },
   meta: { alignItems: 'center', marginTop: 2, paddingHorizontal: 4 },
-  retry: {
-    color: ERROR_COLOR,
-    fontSize: 10,
-    textDecorationLine: 'underline',
-    textDecorationColor: ERROR_COLOR,
-  },
+  retry: { fontSize: 10, textDecorationLine: 'underline' },
   chip: {
     // `flexDirection` and `alignSelf` are supplied per-render from the
     // resolved direction — see fileChip/unavailableChip.

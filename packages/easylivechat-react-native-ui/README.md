@@ -164,20 +164,41 @@ and you do not have to manage any of it:
 |---|---|
 | `idle` / `loading` / `resuming` | A spinner while your workspace config loads (an error and Retry if it cannot) |
 | `prechat` | The pre-chat form you configured — skipped if you `identify` |
-| `chat` | The conversation: thread, composer, and a notice while you are closed |
+| `chat` | The conversation: thread, composer, a notice while you are closed, and the visitor's place while they wait in the queue |
 | `feedback` | Your post-chat survey, or the built-in CSAT |
-| `offline` | Your out-of-hours notice |
+| `offline` | Your closed notice |
 
 Out-of-hours behaviour is a dashboard setting, not a client one — take a
-message, show a notice, or accept chats anyway.
+message, show a notice, or accept chats anyway. The notice says what the web
+widget's does: the one you wrote in Settings → Availability, whatever else is
+going on; without one, that your AI assistant can help in the meantime while it
+covers, or our own words in the visitor's language — never an invitation to
+leave a message where none is taken — and when you are back.
 
 Cards your agents send are drawn as cards — image, title, text, link buttons
 and reply buttons, several as a carousel. The quick replies you set on the
 greeting, and the AI assistant's Yes / No when it offers to hand over, are
-one-tap buttons under the message. Pictures open full-screen with pinch,
+one-tap buttons under the message. A link in a message gets the preview card
+your server made for it (site, title, a line of description, its picture) while
+Widget settings has link previews on. The visitor reacts to your team's messages
+with a long press — 👍 ❤️ 😂 😮 😢 🙏, or any emoji from the + (a search over
+their names, the categories, the ones they used last), one per message, the
+same again takes it back — and sees your agents' reactions on theirs. Pictures open full-screen with pinch,
 double-tap and pan. Voice notes play in place, with their length and a seek
-bar. Everything follows your workspace's colours and the visitor's language
-and direction.
+bar. Everything follows your workspace's colours — in light or dark, as Widget
+settings chooses, `auto` following the visitor's phone — and the visitor's
+language and direction. The launcher takes its size and its words ("Chat with
+us") from Widget settings too.
+
+With the visitor emails on in your workspace, the two the web widget offers are
+here as well, as cards above the thread — never a pop-up. **Email me this
+chat**: the envelope beside the × (`showAppBar`), once the conversation has
+something in it, and a row above the survey once it has ended; one tap sends it
+to the address on file, shown masked, or the visitor types another. **Get the
+reply by email**: asked once per conversation, after the visitor has written
+while nobody can answer — you are closed, they are waiting in the queue, or
+nobody is accepting — and only if you have no address for them, so a reply that
+comes after they left still reaches them.
 
 ## Recipes
 
@@ -251,6 +272,35 @@ infer it from the phase afterwards, because the phase is driven by the
 server's close echo, which is deliberately ignored for a conversation already
 closed or already rated.
 
+### Email me this chat from your own header
+
+`showAppBar` draws the envelope itself. With your own header, put
+`EasyLiveChatEmailTranscriptButton` beside `EasyLiveChatEndChatButton` — it
+renders only while the email is on offer, and opens the card in the chat
+screen:
+
+```tsx
+<EasyLiveChatEmailTranscriptButton theme={theme} />
+```
+
+A header that takes a callback rather than a node uses
+`useEmailTranscriptOffer()` — `{ available, open }`. "Get the reply by email"
+needs nothing from you.
+
+### Open the chat from an emailed link
+
+Your workspace's emails to a visitor who has left carry a **Reply in the chat**
+link to your site, with `#elc_chat=<token>` on the end. If your app handles
+links to your site, hand the URL to the SDK and open the chat screen when it
+says yes:
+
+```ts
+if (await EasyLiveChat.instance.resumeFromLink(url)) navigation.navigate('Chat');
+```
+
+The full recipe, for expo-router and React Navigation, is in the core
+package's README.
+
 ### Help articles
 
 With the workspace's "Show help articles" switch on, the chat screen offers
@@ -296,9 +346,30 @@ override** — layout direction follows the locale and the content, not
 branding, so a colours-only override cannot silently force an RTL workspace to
 LTR. Use the explicit `directionOverride` prop if you genuinely need to.
 
+**Light and dark.** Widget settings chooses: `light` (the look every widget had
+before, and what an older server means), `dark`, or `auto` — the visitor's
+phone, followed live. Dark is derived from your colours as the web widget does
+it: your brand stays on the launcher, the visitor's bubbles and the send
+button; the page and cards become a dark ground tinted toward it; links and
+outlined buttons use `theme.primaryInk`, your brand lightened until it reads.
+Your override still wins — pin the scheme, or paint the surfaces yourself and
+the SDK fills the rest from the scheme your colours are for:
+
+```tsx
+// Always light, whatever the workspace or the phone says.
+<EasyLiveChatScreen themeOverride={{ scheme: 'light' }} />
+
+// Your own dark surfaces; the text and the ink follow them.
+<EasyLiveChatScreen themeOverride={{ background: '#0B1120', surface: '#141B2D' }} />
+```
+
+Drawing views of your own beside the SDK's? `useEasyLiveChatTheme(config,
+themeOverride)` gives you the same resolved theme, and re-renders when the
+phone switches.
+
 ### Language and RTL
 
-85 chrome strings ship in 13 locales
+122 chrome strings ship in 13 locales
 (`en ar ckb de es fr hi it kmr pt tr ur zh`). Resolution order: host-forced
 locale → the `locale` prop → server workspace locale → device locale → `en`,
 matching on the language subtag only (`pt-BR` → `pt`). `ku` maps to `ckb`
@@ -357,13 +428,19 @@ Every screen takes `themeOverride`, `directionOverride`, `strings`,
 | `EasyLiveChatEndChatButton` / `EndChatDialog` | Explicit end-chat action, with confirmation |
 | `EasyLiveChatHelpScreen` | Help articles: search, reader, "Was this helpful?", start a chat. `onClose`, `onStartChat`, `onOpenLink`, `showAppBar`, `initialArticleId` |
 | `HelpView` / `HelpMarkdownView` | The help UI without a screen around it; an article body drawn natively (no HTML) |
-| `ThreadView`, `MessageBubble`, `ComposerBar`, `PreChatFormView`, `PostChatFormView`, `FeedbackPromptView`, `ClosedNoticeView`, `ElcImageViewer` | The pieces the screen is built from |
+| `ThreadView`, `MessageBubble`, `ComposerBar`, `PreChatFormView`, `PostChatFormView`, `FeedbackPromptView`, `ClosedNoticeView`, `ClosedNoticeBanner`, `QueueNotice`, `ElcImageViewer` | The pieces the screen is built from |
+| `ReactionChips`, `QuickReactionRow`, `LinkPreviewCard` | A bubble's reactions, the quick row a long press opens, and a link's preview card |
+| `EmojiPicker`, `EmojiPickerSheet` | The whole picker — search, categories, recent — and the sheet the quick row's + opens; `searchEmoji`, `emojiCatalog` for your own |
+| `EasyLiveChatEmailTranscriptButton`, `useEmailTranscriptOffer`, `EmailCard` | "Email me this chat" for your own header, and the card both emails are drawn with |
+| `closedNoticeText` | The closed / busy notice's words, as the banner and the closed screen say them |
 | `SecureAsyncStorage` | Durable storage default (keychain + AsyncStorage) |
 | `overrideAll`, `overrideByLocale`, `setHostLocale`, `stringsFor` | The chrome strings |
-| `themeFromConfig`, `DirectionProvider`, `directionStyles`, `textDirectionOf` | Theming and bidi helpers for your own UI |
+| `useEasyLiveChatTheme`, `themeFromConfig`, `inkOf`, `errorColorOf`, `DirectionProvider`, `directionStyles`, `textDirectionOf` | Theming (light and dark) and bidi helpers for your own UI |
 
 The core's API — `boot`, `identify`, `reset`, `open`, `endChat`, `sendMessage`,
-`searchHelp`, `getHelpArticle`, the stores and the `use…` hooks — is
+`react`, `emailTranscript`, `visitorEmail`, `setVisitorEmail`,
+`resumeFromLink`, `searchHelp`, `getHelpArticle`, the stores and the `use…`
+hooks — is
 re-exported here and documented in
 [`@easylivechat/react-native`](../easylivechat-react-native).
 
@@ -396,6 +473,11 @@ leave voice messages off.
 **"No cryptographic random source found".** Wire `setUuidGenerator` (or import
 `react-native-get-random-values`) — see [Install](#install).
 
+**The chat turned dark (or will not).** Widget settings decides: `auto`
+follows the phone's appearance, `dark` is always dark, and a workspace created
+before dark mode existed is on `light`. To decide it in the app instead, pin
+`themeOverride={{ scheme: 'light' }}` (or `'dark'`).
+
 **The chat is left-to-right in Arabic.** The workspace locale decides
 direction; pass `locale="ar"` (or `directionOverride="rtl"`) if your app knows
 better than the workspace default.
@@ -408,8 +490,10 @@ is the same protocol and state machine with no components — bind the stores
 
 ## Limitations
 
-Background push is **not implemented** — see the core package's README. Web is
-not supported. `customCss` is a documented no-op.
+Notifications to your app's users are your own server's to send, from the
+`message.created` webhook — see "Notifications" in the core package's README.
+Web is not supported. `customCss` is a documented no-op. The emoji search
+matches English names, as on the web.
 
 ## License
 

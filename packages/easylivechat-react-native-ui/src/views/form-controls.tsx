@@ -14,7 +14,14 @@ import {
 import { useDirectionStyles } from '../direction';
 import { CaretDownIcon, CheckboxIcon, RadioIcon, StarIcon } from '../icons';
 import type { Strings } from '../l10n';
-import { ERROR_COLOR, type EasyLiveChatTheme, onColor, withAlpha } from '../theme';
+import {
+  type EasyLiveChatTheme,
+  errorColorOf,
+  inkOf,
+  keyboardAppearance,
+  onColor,
+  withAlpha,
+} from '../theme';
 import { MAX_FONT_SCALE } from '../text-scaling';
 
 /**
@@ -43,9 +50,16 @@ export function FieldLabel({
   );
 }
 
-export function FieldError({ message }: { message: string }): React.JSX.Element {
+export function FieldError({
+  message,
+  theme,
+}: {
+  message: string;
+  /** For the red that reads on it; light's when left out. */
+  theme?: EasyLiveChatTheme;
+}): React.JSX.Element {
   const dir = useDirectionStyles();
-  return <Text style={[styles.error, dir.textStart]}>{message}</Text>;
+  return <Text style={[styles.error, dir.textStart, { color: errorColorOf(theme) }]}>{message}</Text>;
 }
 
 export function TextField({
@@ -74,6 +88,7 @@ export function TextField({
       onChangeText={onChangeText}
       placeholder={placeholder}
       placeholderTextColor={withAlpha(theme.text, 0.4)}
+      keyboardAppearance={keyboardAppearance(theme)}
       editable={editable}
       multiline={multiline}
       keyboardType={keyboardType}
@@ -83,7 +98,7 @@ export function TextField({
         {
           color: theme.text,
           backgroundColor: theme.surface,
-          borderColor: hasError ? ERROR_COLOR : withAlpha(theme.text, 0.15),
+          borderColor: hasError ? errorColorOf(theme) : withAlpha(theme.text, 0.15),
           minHeight: multiline === true ? 92 : 44,
           textAlignVertical: multiline === true ? 'top' : 'center',
         },
@@ -134,7 +149,7 @@ export function SelectField({
           {
             flexDirection: dir.row,
             backgroundColor: theme.surface,
-            borderColor: hasError ? ERROR_COLOR : withAlpha(theme.text, 0.15),
+            borderColor: hasError ? errorColorOf(theme) : withAlpha(theme.text, 0.15),
           },
         ]}
       >
@@ -168,7 +183,7 @@ export function SelectField({
                   style={[styles.sheetRow, { flexDirection: dir.row }]}
                 >
                   <RadioIcon
-                    color={option === value ? theme.primary : withAlpha(theme.text, 0.35)}
+                    color={option === value ? inkOf(theme) : withAlpha(theme.text, 0.35)}
                     selected={option === value}
                     size={20}
                   />
@@ -222,13 +237,13 @@ export function RadioGroup({
               styles.radioRow,
               {
                 flexDirection: dir.row,
-                backgroundColor: selected ? withAlpha(theme.primary, 0.08) : 'transparent',
-                borderColor: selected ? theme.primary : withAlpha(theme.text, 0.15),
+                backgroundColor: selected ? withAlpha(inkOf(theme), 0.08) : 'transparent',
+                borderColor: selected ? inkOf(theme) : withAlpha(theme.text, 0.15),
               },
             ]}
           >
             <RadioIcon
-              color={selected ? theme.primary : withAlpha(theme.text, 0.35)}
+              color={selected ? inkOf(theme) : withAlpha(theme.text, 0.35)}
               selected={selected}
               size={20}
             />
@@ -329,7 +344,7 @@ export function ConsentField({
         <View style={styles.consentBox}>
           <CheckboxIcon
             color={theme.primary}
-            borderColor={hasError ? ERROR_COLOR : withAlpha(theme.text, 0.45)}
+            borderColor={hasError ? errorColorOf(theme) : withAlpha(theme.text, 0.45)}
             checked={checked}
             size={20}
           />
@@ -346,7 +361,7 @@ export function ConsentField({
             accessibilityRole="link"
             onPress={onOpenPolicy}
             suppressHighlighting
-            style={[styles.consentLink, dir.textStart, { color: theme.primary }]}
+            style={[styles.consentLink, dir.textStart, { color: inkOf(theme) }]}
           >
             {policyLabel}
           </Text>
@@ -385,7 +400,7 @@ export function RatingRow({
           <StarIcon
             size={size}
             filled={star <= value}
-            color={star <= value ? theme.primary : withAlpha(theme.text, 0.3)}
+            color={star <= value ? inkOf(theme) : withAlpha(theme.text, 0.3)}
           />
         </Pressable>
       ))}
@@ -432,7 +447,7 @@ export function PrimaryButton({
 
 const styles = StyleSheet.create({
   label: { fontSize: 14, fontWeight: '600', marginBottom: 8 },
-  error: { color: ERROR_COLOR, fontSize: 12, marginTop: 6 },
+  error: { fontSize: 12, marginTop: 6 },
   input: {
     borderWidth: 1,
     borderRadius: 10,

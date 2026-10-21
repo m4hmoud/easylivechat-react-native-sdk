@@ -411,6 +411,35 @@ const subscription = (): { remove: () => void } => ({ remove: () => undefined })
 
 const WINDOW = { width: 390, height: 844, scale: 3, fontScale: 1 };
 
+/**
+ * The device's appearance. Light, as a fresh simulator is; a test turns it
+ * dark with `Appearance.__setColorScheme('dark')` (inside `act`) and puts it
+ * back after. `useColorScheme` follows it live, as the real hook does.
+ */
+type ColorScheme = 'light' | 'dark' | null;
+let colorScheme: ColorScheme = 'light';
+const appearanceListeners = new Set<(p: { colorScheme: ColorScheme }) => void>();
+const Appearance = {
+  getColorScheme: (): ColorScheme => colorScheme,
+  setColorScheme: (next: ColorScheme): void => Appearance.__setColorScheme(next),
+  addChangeListener: (fn: (p: { colorScheme: ColorScheme }) => void) => {
+    appearanceListeners.add(fn);
+    return { remove: () => appearanceListeners.delete(fn) };
+  },
+  __setColorScheme(next: ColorScheme): void {
+    colorScheme = next;
+    for (const fn of [...appearanceListeners]) fn({ colorScheme: next });
+  },
+};
+
+function useColorScheme(): ColorScheme {
+  return React.useSyncExternalStore(
+    (onChange) => Appearance.addChangeListener(onChange).remove,
+    () => colorScheme,
+    () => colorScheme,
+  );
+}
+
 export const reactNativeMock = {
   // ── APIs the SDK calls ──
   AppState: {
@@ -458,6 +487,8 @@ export const reactNativeMock = {
     addEventListener: subscription,
   },
   useWindowDimensions: () => WINDOW,
+  Appearance,
+  useColorScheme,
   PixelRatio: {
     get: () => WINDOW.scale,
     getFontScale: () => WINDOW.fontScale,

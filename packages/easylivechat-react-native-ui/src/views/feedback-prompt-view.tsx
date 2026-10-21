@@ -9,7 +9,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useDirectionStyles } from '../direction';
 import { CheckCircleIcon } from '../icons';
 import type { Strings } from '../l10n';
-import { ERROR_COLOR, type EasyLiveChatTheme, withAlpha } from '../theme';
+import { type EasyLiveChatTheme, errorColorOf, inkOf, withAlpha } from '../theme';
 import { PrimaryButton, RatingRow, TextField } from './form-controls';
 
 export interface FeedbackPromptViewProps {
@@ -67,10 +67,10 @@ export function FeedbackPromptView({
   if (done) {
     return (
       <View style={[styles.centered, { backgroundColor: theme.background }]}>
-        <CheckCircleIcon color={theme.primary} size={56} />
+        <CheckCircleIcon color={inkOf(theme)} size={56} />
         <Text style={[styles.thanks, { color: theme.text }]}>{strings.t('thanksForFeedback')}</Text>
         <Pressable onPress={onDone} accessibilityRole="button" style={{ padding: 12 }}>
-          <Text style={{ color: theme.primary, fontSize: 15 }}>{strings.t('closeChat')}</Text>
+          <Text style={{ color: inkOf(theme), fontSize: 15 }}>{strings.t('closeChat')}</Text>
         </Pressable>
       </View>
     );
@@ -110,7 +110,7 @@ export function FeedbackPromptView({
         theme={theme}
       />
 
-      {error != null ? <Text style={[styles.error, dir.textStart]}>{error}</Text> : null}
+      {error != null ? <Text style={[styles.error, dir.textStart, { color: errorColorOf(theme) }]}>{error}</Text> : null}
 
       <View style={{ height: 20 }} />
       <PrimaryButton
@@ -139,7 +139,7 @@ const styles = StyleSheet.create({
   content: { padding: 24, flexGrow: 1, justifyContent: 'center' },
   title: { fontSize: 20, fontWeight: '700', textAlign: 'center' },
   hint: { fontSize: 14, textAlign: 'center', marginTop: 6 },
-  error: { color: ERROR_COLOR, fontSize: 13, marginTop: 12 },
+  error: { fontSize: 13, marginTop: 12 },
   skip: { alignItems: 'center', paddingVertical: 14, marginTop: 4 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 },
   thanks: { fontSize: 18, fontWeight: '600', textAlign: 'center', marginTop: 16, marginBottom: 12 },

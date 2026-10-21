@@ -16,6 +16,7 @@
  * not `new URL()`, whose implementation in Hermes is incomplete — it is
  * deliberately no looser than the WHATWG parser the server uses.
  */
+import { isWebUrl } from '../internal/web-url';
 import type { ChatMessage } from './chat-message';
 
 // ── quick replies ─────────────────────────────────────────────────────────
@@ -160,15 +161,9 @@ export const MAX_CARD_BUTTONS = 3;
 export const MAX_CAROUSEL_CARDS = 10;
 const MAX_CARD_URL = 1000;
 
-// scheme://[userinfo@]host[:port][/path][?query][#fragment] — see the header.
-const SAFE_URL = /^https?:\/\/(?:[^\s/?#@]+@)?(?:\[[0-9a-f:.]+\]|[^\s/?#@:[\]\\<>^|"%]+)(?::(\d{0,5}))?(?:[/?#]\S*)?$/i;
-
-/** A link a visitor may be sent to: http or https with a host; nothing else. */
+/** A link a visitor may be sent to: http or https with a host; nothing else (see the header). */
 export function isSafeCardUrl(url: unknown): url is string {
-  if (typeof url !== 'string' || url.length > MAX_CARD_URL) return false;
-  const m = SAFE_URL.exec(url.trim());
-  if (!m) return false;
-  return !(m[1] !== undefined && m[1] !== '' && Number(m[1]) > 65535);
+  return isWebUrl(url, MAX_CARD_URL);
 }
 
 function isCardImage(url: unknown): url is string {

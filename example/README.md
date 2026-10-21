@@ -21,6 +21,9 @@ bunx expo run:ios         # or: bunx expo run:android
 | closed workspace | open outside the tenant's working hours |
 | RTL | switch the language chip to العربية / کوردی — the chat mirrors, this app stays LTR |
 | logout | **reset()** — the next open is a new contact with no history |
+| emailed "Reply in the chat" link | open `easylivechatexample://chat#elc_chat=<token>` (the token from the email's link) — `resumeFromLink()` opens that conversation |
+| email me this chat / get the reply by email | the envelope in the chat, and the card asked while nobody can answer — on a workspace with the visitor emails on |
+| emoji search | long-press a team message → **+** |
 
 The status block at the top is live SDK state, read straight from the hooks:
 phase, connection, unread count, visitor mode, availability reason and the

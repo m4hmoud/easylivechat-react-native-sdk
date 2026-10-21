@@ -12,7 +12,7 @@ import {
   useWidgetConfig,
   useWorkspaceAvailability,
 } from '@easylivechat/react-native';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   AppState,
@@ -26,17 +26,20 @@ import {
 
 import { type Direction, DirectionProvider, useDirectionStyles } from './direction';
 import { ElcChime } from './chime';
+import { AfterChatEmailOffer, ChatEmailOffers, EasyLiveChatEmailTranscriptButton } from './email-offers';
 import { EasyLiveChatEndChatButton } from './end-chat-button';
 import { ArticleIcon, BackIcon, ChevronIcon, OfflineIcon } from './icons';
 import { overrideAll, overrideByLocale, setHostLocale, stringsFor } from './l10n';
 import type { ElcAttachmentPicker } from './picked-file';
-import { type EasyLiveChatTheme, themeFromConfig, withAlpha } from './theme';
+import { type EasyLiveChatTheme, inkOf, withAlpha } from './theme';
+import { useEasyLiveChatTheme } from './use-theme';
 import { ClosedNoticeBanner, ClosedNoticeView } from './views/closed-notice-view';
 import { ComposerBar } from './views/composer-bar';
 import { FeedbackPromptView } from './views/feedback-prompt-view';
 import { HelpView, offerHelpEntry } from './views/help-view';
 import { PostChatFormView } from './views/post-chat-form-view';
 import { PreChatFormView } from './views/pre-chat-form-view';
+import { QueueNotice } from './views/queue-notice-view';
 import { ThreadView } from './views/thread-view';
 import { PrimaryButton } from './views/form-controls';
 import { MAX_FONT_SCALE } from './text-scaling';
@@ -153,10 +156,8 @@ export function EasyLiveChatScreen(props: EasyLiveChatScreenProps): React.JSX.El
 
   const strings = stringsFor(locale ?? config?.locale);
 
-  const theme = useMemo(() => {
-    const base = themeFromConfig(config, themeOverride);
-    return directionOverride != null ? { ...base, direction: directionOverride } : base;
-  }, [config, themeOverride, directionOverride]);
+  // Light or dark as the workspace chose — `auto` follows the device, live.
+  const theme = useEasyLiveChatTheme(config, themeOverride, directionOverride);
 
   /** Latches the (non-idempotent) open() so a phase rebuild cannot re-fire it. */
   const openRequested = useRef(false);
@@ -373,7 +374,7 @@ function PhaseView({
 }): React.JSX.Element {
   const spinner = (
     <View style={styles.centered}>
-      <ActivityIndicator size="large" color={theme.primary} />
+      <ActivityIndicator size="large" color={inkOf(theme)} />
     </View>
   );
 
@@ -417,6 +418,12 @@ function PhaseView({
           {workspaceClosed || composerLocked ? (
             <ClosedNoticeBanner config={config} theme={theme} strings={strings} />
           ) : null}
+          {/* Waiting for a person: where they stand, over a thread they can
+              still read and write in. Gone the moment someone is there. */}
+          <QueueNotice theme={theme} strings={strings} />
+          {/* "Email me this chat" when asked for, and "Get the reply by
+              email" when nobody can answer — inline, never a modal. */}
+          <ChatEmailOffers theme={theme} strings={strings} />
           <ThreadView theme={theme} strings={strings} />
           <ComposerBar
             theme={theme}
@@ -430,15 +437,21 @@ function PhaseView({
       // A tenant that built a survey in the dashboard gets exactly that;
       // everyone else keeps the built-in CSAT. Same rule as the web widget, so
       // a visitor's questions do not depend on which client they opened.
-      return config != null && postChatHasFields(config.postChatForm) ? (
-        <PostChatFormView
-          config={config}
-          theme={theme}
-          strings={strings}
-          onDone={onRequestClose}
-        />
-      ) : (
-        <FeedbackPromptView theme={theme} strings={strings} onDone={onRequestClose} />
+      return (
+        <View style={styles.root}>
+          {/* A copy of the chat that just ended, to keep. */}
+          <AfterChatEmailOffer theme={theme} strings={strings} />
+          {config != null && postChatHasFields(config.postChatForm) ? (
+            <PostChatFormView
+              config={config}
+              theme={theme}
+              strings={strings}
+              onDone={onRequestClose}
+            />
+          ) : (
+            <FeedbackPromptView theme={theme} strings={strings} onDone={onRequestClose} />
+          )}
+        </View>
       );
   }
 }
@@ -496,6 +509,9 @@ function ChatAppBar({
       >
         {title}
       </Text>
+      {/* "Email me this chat" — the web widget's ⋯ menu entry. Renders only
+          while it is on offer. */}
+      <EasyLiveChatEmailTranscriptButton locale={locale} color={theme.text} theme={theme} />
       {/* Renders only while there is something to end; otherwise it keeps the
           title centred by occupying the same width. */}
       <View style={styles.appBarButton}>
@@ -554,7 +570,7 @@ function HelpEntry({
         },
       ]}
     >
-      <ArticleIcon color={theme.primary} size={18} />
+      <ArticleIcon color={inkOf(theme)} size={18} />
       <Text numberOfLines={2} style={[styles.helpEntryText, dir.textStart, { color: theme.text }]}>
         {label}
       </Text>

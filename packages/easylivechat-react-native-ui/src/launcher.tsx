@@ -1,4 +1,9 @@
-import { EasyLiveChat, useUnreadCount, useWidgetConfig } from '@easylivechat/react-native';
+import {
+  EasyLiveChat,
+  LAUNCHER_PX,
+  useUnreadCount,
+  useWidgetConfig,
+} from '@easylivechat/react-native';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -12,11 +17,14 @@ import {
 
 import { ElcChime } from './chime';
 import { EasyLiveChatScreen } from './chat-screen';
-import { type Direction, insetEnd } from './direction';
+import { textDirectionOf } from './bidi';
+import { type Direction, directionStyles, insetEnd } from './direction';
 import { ChatBubbleIcon } from './icons';
+import { MAX_FONT_SCALE } from './text-scaling';
 import { stringsFor } from './l10n';
 import type { ElcAttachmentPicker } from './picked-file';
-import { FALLBACK_THEME, type EasyLiveChatTheme, onColor, themeFromConfig } from './theme';
+import { FALLBACK_THEME, type EasyLiveChatTheme, onColor } from './theme';
+import { useEasyLiveChatTheme } from './use-theme';
 import { RemoteImage } from './views/remote-image';
 
 export type LauncherAlignment = 'bottom-left' | 'bottom-right';
@@ -54,6 +62,11 @@ export interface EasyLiveChatLauncherProps {
  * On tap it lazily `open()`s the session and presents an
  * {@link EasyLiveChatScreen}. It carries an unread badge bound to
  * `unreadCount`, capped at `99+`.
+ *
+ * Its size and its words come from Widget settings, as the web launcher's do:
+ * `launcherSize` (48, 56 or 64 points) and `launcherLabel` — "Chat with us"
+ * beside the icon, a pill instead of a circle, in the visitor's language. The
+ * brand colour fills it in light and dark alike.
  */
 export function EasyLiveChatLauncher({
   themeOverride,
@@ -91,7 +104,7 @@ export function EasyLiveChatLauncher({
     };
   }, []);
 
-  const theme = themeFromConfig(config, themeOverride);
+  const theme = useEasyLiveChatTheme(config, themeOverride);
   // Named `chrome` because `strings` is already this component's prop — the
   // host's string-override map.
   const chrome = stringsFor(locale ?? config?.locale);
@@ -123,6 +136,11 @@ export function EasyLiveChatLauncher({
 
   const bubbleIcon = themeOverride?.bubbleIconUrl ?? config?.bubbleIconUrl;
   const fg = onColor(theme.primary);
+  const diameter = LAUNCHER_PX[config?.launcherSize ?? 'medium'];
+  const iconSize = Math.round((diameter * 26) / 56);
+  // The tenant's own words, drawn verbatim — the server picked the language.
+  const label = config?.launcherLabel;
+  const row = directionStyles(theme.direction).row;
 
   return (
     <>
@@ -140,25 +158,66 @@ export function EasyLiveChatLauncher({
           accessibilityRole="button"
           // Localized, not a hardcoded English fallback — this is the only
           // label a screen-reader user gets for the launcher.
-          accessibilityLabel={config?.welcomeTitle ?? chrome.t('chatTitle')}
-          style={[styles.bubble, { backgroundColor: theme.primary }]}
+          accessibilityLabel={label ?? config?.welcomeTitle ?? chrome.t('chatTitle')}
+          style={[
+            styles.bubble,
+            {
+              backgroundColor: theme.primary,
+              height: diameter,
+              minWidth: diameter,
+              borderRadius: diameter / 2,
+              flexDirection: row,
+            },
+          ]}
         >
-          {opening ? (
-            <ActivityIndicator size="small" color={fg} />
-          ) : bubbleIcon != null && bubbleIcon.trim().length > 0 ? (
-            <RemoteImage
-              uri={EasyLiveChat.instance.resolveUrl(bubbleIcon)}
-              style={styles.bubbleIcon}
-              theme={theme}
-              fallback={<ChatBubbleIcon color={fg} size={26} />}
-              placeholder={<ChatBubbleIcon color={fg} size={26} />}
-            />
-          ) : (
-            // The bubble's tail points at the speaker, so it mirrors.
-            <View style={theme.direction === 'rtl' ? { transform: [{ scaleX: -1 }] } : null}>
-              <ChatBubbleIcon color={fg} size={26} />
-            </View>
-          )}
+          {/* The icon in a box the launcher's own size, so it stays a circle
+              on its own and the start of the pill with words beside it — a
+              little narrower there, which pulls the words in toward it. */}
+          <View
+            style={[styles.iconBox, { width: label != null ? diameter - 6 : diameter, height: diameter }]}
+          >
+            {opening ? (
+              <ActivityIndicator size="small" color={fg} />
+            ) : bubbleIcon != null && bubbleIcon.trim().length > 0 ? (
+              <RemoteImage
+                uri={EasyLiveChat.instance.resolveUrl(bubbleIcon)}
+                style={{
+                  width: Math.round((diameter * 32) / 56),
+                  height: Math.round((diameter * 32) / 56),
+                  borderRadius: Math.round((diameter * 16) / 56),
+                }}
+                theme={theme}
+                fallback={<ChatBubbleIcon color={fg} size={iconSize} />}
+                placeholder={<ChatBubbleIcon color={fg} size={iconSize} />}
+              />
+            ) : (
+              // The bubble's tail points at the speaker, so it mirrors.
+              <View style={theme.direction === 'rtl' ? { transform: [{ scaleX: -1 }] } : null}>
+                <ChatBubbleIcon color={fg} size={iconSize} />
+              </View>
+            )}
+          </View>
+          {label != null ? (
+            <>
+              <Text
+                numberOfLines={1}
+                maxFontSizeMultiplier={MAX_FONT_SCALE}
+                style={[
+                  styles.label,
+                  {
+                    color: fg,
+                    fontSize: diameter >= 64 ? 16 : 15,
+                    writingDirection: textDirectionOf(label) ?? theme.direction,
+                  },
+                ]}
+              >
+                {label}
+              </Text>
+              {/* The pill's trailing padding, as a spacer: a logical padding
+                  would follow the host's direction, not the chat's. */}
+              <View style={{ width: 18 }} />
+            </>
+          ) : null}
         </Pressable>
 
         {unread > 0 ? (
@@ -208,9 +267,6 @@ export function EasyLiveChatLauncher({
 const styles = StyleSheet.create({
   anchor: { position: 'absolute' },
   bubble: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
     alignItems: 'center',
     justifyContent: 'center',
     // A real shadow on both platforms: iOS reads the shadow* props, Android
@@ -221,7 +277,8 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 3 },
     elevation: 6,
   },
-  bubbleIcon: { width: 32, height: 32, borderRadius: 16 },
+  iconBox: { alignItems: 'center', justifyContent: 'center' },
+  label: { fontWeight: '600', flexShrink: 1 },
   badge: {
     position: 'absolute',
     top: -2,

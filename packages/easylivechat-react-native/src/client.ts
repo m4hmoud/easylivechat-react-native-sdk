@@ -10,9 +10,14 @@ import type {
   FeedbackResult,
   MessagePage,
   ProactiveMessage,
+  QueueStatus,
   SendResult,
+  TranscriptResult,
   UploadedFile,
+  VisitorEmailResult,
+  VisitorEmailState,
 } from './models/results';
+import { resumeLinkToken } from './internal/resume-link';
 import type {
   AvailabilityReason,
   VisitorMode,
@@ -190,6 +195,32 @@ export class EasyLiveChat {
     null,
   );
 
+  /**
+   * Where the visitor stands while they wait for a person — place, estimated
+   * minutes and the workspace's own notice, filled in by the server — or null
+   * when they are not waiting. A notice above the thread, never a screen of
+   * its own: the conversation stays usable underneath. Cleared the moment
+   * anyone from the team is there.
+   */
+  readonly queue = this.makeStore<QueueStatus | null>(() => this.controller?.queue ?? null, null);
+
+  /** The workspace offers "Email me this chat" — see {@link emailTranscript}. */
+  readonly transcriptEmailEnabled = this.makeStore<boolean>(
+    () => this.controller?.transcriptEmailEnabled ?? null,
+    false,
+  );
+
+  /**
+   * The workspace offers "Get the reply by email" — see
+   * {@link setVisitorEmail}: ask for an address once the visitor has written
+   * while nobody can answer (closed, queued, nobody accepting) and their
+   * contact has none ({@link visitorEmail}).
+   */
+  readonly replyEmailEnabled = this.makeStore<boolean>(
+    () => this.controller?.replyEmailEnabled ?? null,
+    false,
+  );
+
   private rebindStores(): void {
     for (const s of this.forwardingStores) s.rebind();
     this.lifecycleEmitter.emit();
@@ -342,26 +373,20 @@ export class EasyLiveChat {
     const pending = this.pendingIdentity;
     this.pendingIdentity = null;
     pending?.(controller);
-    // The device's push token, handed over before this controller existed —
-    // before boot, or to one that was shut down or reset since.
-    const push = this.heldPush;
-    if (push != null) void controller.setPushToken(push.token, push.options);
+    // An emailed link handed over before boot — a deep link that launched the
+    // app — now that the identity it is judged against is in place.
+    const link = this.pendingLink;
+    this.pendingLink = null;
+    if (link != null) {
+      controller.resumeFromLink(link.link).then(link.resolve, () => link.resolve(false));
+    }
   }
 
   /** identify()/clearIdentity() called before {@link boot}, applied by it. */
   private pendingIdentity: ((c: SessionController) => void) | null = null;
 
-  /**
-   * The device's push token, kept for the life of the process. It belongs to
-   * the device rather than to a visitor, so it outlives a controller: after a
-   * `reset()` (which drops the signed-out person's registration) the next
-   * person's first session registers it again, exactly as an identity switch
-   * does.
-   */
-  private heldPush: {
-    token: string;
-    options: { platform: PushPlatform; appVersion?: string };
-  } | null = null;
+  /** A {@link resumeFromLink} called before {@link boot}, followed by it. */
+  private pendingLink: { link: string; resolve: (ok: boolean) => void } | null = null;
 
   /**
    * Pre-identify a known (logged-in) visitor BEFORE {@link open}, which then
@@ -417,7 +442,7 @@ export class EasyLiveChat {
    * the cached profile goes so the name is not resent on the next resume.
    * When this device's visitor had been identified with a `userId`, the
    * visitor is forgotten as well — a fresh visitorId, no conversation to
-   * resume, its push registration dropped — and a chat on screen restarts as
+   * resume — and a chat on screen restarts as
    * an anonymous visitor. {@link reset} is the full logout that abandons the
    * visitorId in every case.
    *
@@ -505,6 +530,114 @@ export class EasyLiveChat {
 
   markRead(): void {
     this.controller?.markRead();
+  }
+
+  /**
+   * React to one of the team's messages, or take the visitor's reaction back
+   * with `null` — one reaction per message, so another emoji replaces theirs.
+   * `toggledReaction(message, emoji)` turns a tap into the right call;
+   * `canReactTo(message)` says whether to offer it at all.
+   *
+   * The thread shows it at once and puts it back if the server refuses.
+   * Resolves whether the server took it; never rejects. Reactions from the
+   * team, and the visitor's own from another device, arrive by themselves on
+   * the message's `reactions`.
+   */
+  react(messageId: string, emoji: string | null): Promise<boolean> {
+    return this.controller?.react(messageId, emoji) ?? Promise.resolve(false);
+  }
+
+  // ── emails to the visitor ───────────────────────────────────────────────
+  //
+  // The web widget's "Email me this chat" and "Get the reply by email", over
+  // the same endpoints. They need a conversation; addresses come back masked —
+  // the device may not be the visitor's own.
+
+  /**
+   * "Email me this chat" — this conversation, or the one that just ended (on
+   * the screen after the chat), to `email` or, left out, to the address the
+   * visitor's contact already has. Offer it only while
+   * {@link transcriptEmailEnabled} is true. Resolves with where it went,
+   * masked by the server; rejects with an `EasyLiveChatError` whose `code` is
+   * the server's: `NO_CONTACT_EMAIL` (ask for an address), `INVALID_EMAIL`,
+   * `EMAIL_UNSUBSCRIBED`, `TRANSCRIPT_RATE_LIMITED`, `TRANSCRIPT_DISABLED`.
+   *
+   * ```ts
+   * const { sentTo } = await EasyLiveChat.instance.emailTranscript({ email: 'jo@example.com' });
+   * ```
+   *
+   * A plain string is read as `{ email }`.
+   */
+  emailTranscript(options: { email?: string } | string = {}): Promise<TranscriptResult> {
+    return this.c.emailTranscript(options);
+  }
+
+  /**
+   * The address on the visitor's contact — masked, or null when there is
+   * none — and what the workspace offers. Decide the email offers from it:
+   * "Get the reply by email" is for a visitor with no address on file, and
+   * "Email me this chat" can go straight to the one there is. Rejects with
+   * `NO_TOKEN` before there is a conversation.
+   */
+  visitorEmail(): Promise<VisitorEmailState> {
+    return this.c.visitorEmail();
+  }
+
+  /**
+   * "Get the reply by email": keep `email` on the visitor's contact, so a
+   * reply that comes after they have left still reaches them. Offer it while
+   * {@link replyEmailEnabled} is true, once the visitor has written while
+   * nobody can answer, to one whose contact has no address. Resolves with the
+   * address the contact now holds, masked; rejects with `INVALID_EMAIL` or
+   * `EMAIL_UNSUBSCRIBED`.
+   */
+  setVisitorEmail(email: string): Promise<VisitorEmailResult> {
+    return this.c.setVisitorEmail(email);
+  }
+
+  // ── emailed links ───────────────────────────────────────────────────────
+
+  /**
+   * Open the chat a "Reply in the chat" email links to.
+   *
+   * The workspace's emails to a visitor who has left link to its site with
+   * `#elc_chat=<token>` (or to our chat page with `#resume=<token>`). Hand the
+   * URL your deep-link handler received — or the bare token — and the SDK
+   * trades it with the server for the visitor that conversation belongs to,
+   * becomes that visitor, and resumes it, so the chat screen opens on the
+   * conversation the email was about, whichever device it was opened on.
+   *
+   * ```ts
+   * Linking.addEventListener('url', async ({ url }) => {
+   *   if (await EasyLiveChat.instance.resumeFromLink(url)) navigation.navigate('Chat');
+   * });
+   * ```
+   *
+   * Resolves true once that chat is the open session. Resolves false — never
+   * rejects, and changes nothing — for a URL that is not one of ours (it is
+   * answered at once, with no request, so any URL can be tried), a token the
+   * server refuses (expired, another workspace's, a chat that is gone), or no
+   * network.
+   *
+   * Identity: call {@link identify} first, as before any open. An anonymous
+   * visitor (or one identified without a `userId`) becomes the link's visitor
+   * — whoever holds the emailed link gets what the email showed, the web
+   * widget's rule. A visitor identified with a `userId` only follows a link to
+   * the chat this device already holds, and gets false for any other: resuming
+   * it under their verified identity would hand someone else's conversation to
+   * them.
+   *
+   * Safe before {@link boot}: the link is held and followed once boot has run.
+   */
+  resumeFromLink(link: string): Promise<boolean> {
+    const c = this.controller;
+    if (c != null) return c.resumeFromLink(link);
+    if (resumeLinkToken(link) == null) return Promise.resolve(false);
+    // Only the latest link matters, as with the host's own navigation.
+    this.pendingLink?.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      this.pendingLink = { link, resolve };
+    });
   }
 
   /**
@@ -622,45 +755,27 @@ export class EasyLiveChat {
   }
 
   /**
-   * The device to notify when an agent replies and the app is closed.
+   * Does nothing, and resolves at once. Kept so an app that calls it keeps
+   * compiling.
    *
-   * Hand over the FCM registration token your app already receives
-   * (`@react-native-firebase/messaging`'s `getToken()`, or Expo's
-   * `getDevicePushTokenAsync()` on Android) — the SDK brings no push
-   * dependency of its own, so your project keeps one Firebase setup and one
-   * notification permission prompt. The server sends through FCM on iOS too.
-   *
-   * ```ts
-   * await EasyLiveChat.instance.setPushToken(token, {
-   *   platform: Platform.OS === 'ios' ? 'IOS' : 'ANDROID',
-   *   appVersion: '2.4.0',
-   * });
-   * ```
-   *
-   * Call it as soon as you have a token — even before `boot()`, and before the
-   * visitor opens a chat: a registration can only be authenticated with a
-   * session token, so it is held and sent the moment one exists. Call it again
-   * when the token rotates — the old registration is dropped first. `null`
-   * stops the notifications. An identity switch and {@link reset} drop the
-   * previous person's registration by themselves; the token is kept for the
-   * next person's session.
-   *
-   * Nothing is suppressed server-side, on purpose: a connected socket is not a
-   * person looking at the screen. Skip the notification in your own handler
-   * when the chat is already on screen — your app is the only thing that
-   * knows. Its `data` carries `type: 'visitor.message'`, `conversationId`,
-   * `messageId` and `tenantId`.
-   *
-   * Resolves once the registration has gone out or been held; never rejects.
+   * @deprecated The SDK no longer registers devices for notifications:
+   * sending them would need your Firebase credentials on our servers, and
+   * workspaces no longer hand those over. Notifying your app's users is your
+   * own server's job now, with the push setup you already have. Subscribe a
+   * webhook to `message.created` in Settings → Webhooks; for a reply from the
+   * team (`data.message.senderType` `AGENT`, or `BOT` for the assistant)
+   * whose `data.contact.userId` is set — the `userId` you signed the visitor
+   * in with through {@link identify} — send your own push to that user's
+   * devices. See "Notifications" in the README. Nothing is sent to the server
+   * and nothing is kept on the device; remove the call.
    */
   setPushToken(
     pushToken: string | null,
     options: { platform: PushPlatform; appVersion?: string },
   ): Promise<void> {
-    const next = pushToken == null ? null : pushToken.trim();
-    if (next != null && next.length === 0) return Promise.resolve();
-    this.heldPush = next == null ? null : { token: next, options: { ...options } };
-    return this.controller?.setPushToken(next, options) ?? Promise.resolve();
+    void pushToken;
+    void options;
+    return Promise.resolve();
   }
 
   /** Tear everything down. After this you must {@link boot} again. */
@@ -691,21 +806,18 @@ export class EasyLiveChat {
    * The transcript is NOT deleted — this abandons the identity, not the
    * history.
    *
-   * The device's push registration for the signed-out visitor is dropped too
-   * (best effort, without waiting on the network), so their replies stop
-   * reaching this device; a token given to {@link setPushToken} is kept and
-   * registered again for whoever opens the chat next.
-   *
    * Safe to call when the SDK was NEVER BOOTED this session, which is the
    * common case for a logout that never opened the chat — pass the same
    * `storage` you pass to {@link boot} so the keys can still be cleared. When
    * it IS booted the controller's own storage is used and the argument is
-   * ignored. Unbooted there is no API base to reach, so a push registration
-   * cannot be dropped then — boot first if you have one to stop.
+   * ignored.
    */
   async reset(opts: { storage?: EasyLiveChatStorage } = {}): Promise<void> {
-    // An identity declared before boot belongs to the person signing out.
+    // An identity declared before boot belongs to the person signing out, and
+    // so does a link waiting for boot.
     this.pendingIdentity = null;
+    this.pendingLink?.resolve(false);
+    this.pendingLink = null;
     const c = this.controller;
     if (c != null) {
       await c.resetVisitor();

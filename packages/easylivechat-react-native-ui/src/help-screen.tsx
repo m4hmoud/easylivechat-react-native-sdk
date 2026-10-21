@@ -1,11 +1,12 @@
 import { EasyLiveChat, useIsBooted, useWidgetConfig } from '@easylivechat/react-native';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { SafeAreaView, StyleSheet } from 'react-native';
 
 import { BootRequired, EasyLiveChatScreen } from './chat-screen';
 import { type Direction, DirectionProvider } from './direction';
 import { overrideAll, overrideByLocale, setHostLocale, stringsFor } from './l10n';
-import { type EasyLiveChatTheme, themeFromConfig } from './theme';
+import type { EasyLiveChatTheme } from './theme';
+import { useEasyLiveChatTheme } from './use-theme';
 import type { ElcOpenLink } from './views/help-markdown-view';
 import { type ElcHelpApi, HelpView } from './views/help-view';
 
@@ -92,10 +93,7 @@ export function EasyLiveChatHelpScreen({
   if (stringsByLocale != null) overrideByLocale(stringsByLocale);
   const strings = stringsFor(locale ?? config?.locale);
 
-  const theme = useMemo(() => {
-    const base = themeFromConfig(config, themeOverride);
-    return directionOverride != null ? { ...base, direction: directionOverride } : base;
-  }, [config, themeOverride, directionOverride]);
+  const theme = useEasyLiveChatTheme(config, themeOverride, directionOverride);
 
   useEffect(() => {
     if (!booted || EasyLiveChat.instance.widgetConfig.get() != null) return;

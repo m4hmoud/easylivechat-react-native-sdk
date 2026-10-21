@@ -35,6 +35,12 @@ export interface RemoteImageProps {
   fallback?: React.ReactNode;
   /** Rendered while the image loads. Defaults to a muted spinner. */
   placeholder?: React.ReactNode;
+  /**
+   * Called once the image has failed, for a parent whose layout should not
+   * keep the image's place — a link preview drops its thumbnail and the gap
+   * beside it.
+   */
+  onFailed?: () => void;
 }
 
 type ExpoImageComponent = React.ComponentType<{
@@ -69,6 +75,7 @@ export function RemoteImage({
   theme,
   fallback,
   placeholder,
+  onFailed,
 }: RemoteImageProps): React.JSX.Element {
   const [, forceRender] = useState(0);
   const [failed, setFailed] = useState(false);
@@ -78,6 +85,12 @@ export function RemoteImage({
     setFailed(false);
     setLoading(true);
   }, [uri]);
+
+  useEffect(() => {
+    if (failed) onFailed?.();
+    // Only the transition into failure is news; `onFailed` is usually inline.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [failed]);
 
   useEffect(() => {
     if (expoImage !== undefined) return;

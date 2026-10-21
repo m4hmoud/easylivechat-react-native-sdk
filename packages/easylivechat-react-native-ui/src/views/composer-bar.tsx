@@ -28,7 +28,13 @@ import type { Strings } from '../l10n';
 import type { ElcAttachmentPicker, ElcPickedFile } from '../picked-file';
 import { VoiceLevels } from './voice-levels';
 import { UiPreferences } from '../storage-impl';
-import { ERROR_COLOR, type EasyLiveChatTheme, onColor, withAlpha } from '../theme';
+import {
+  type EasyLiveChatTheme,
+  errorColorOf,
+  keyboardAppearance,
+  onColor,
+  withAlpha,
+} from '../theme';
 import { ElcImageViewer } from './image-viewer';
 import { looksLikeImage } from './message-bubble';
 import { RemoteImage } from './remote-image';
@@ -353,8 +359,8 @@ export function ComposerBar({
       ]}
     >
       {attachError != null ? (
-        <View style={[styles.errorBanner, { backgroundColor: withAlpha(ERROR_COLOR, 0.1) }]}>
-          <Text style={[styles.errorText, dir.textStart]}>{attachError}</Text>
+        <View style={[styles.errorBanner, { backgroundColor: withAlpha(errorColorOf(theme), 0.1) }]}>
+          <Text style={[styles.errorText, dir.textStart, { color: errorColorOf(theme) }]}>{attachError}</Text>
         </View>
       ) : null}
 
@@ -435,6 +441,7 @@ export function ComposerBar({
               value={draft}
               onChangeText={onChangeText}
               editable={!composerLocked}
+              keyboardAppearance={keyboardAppearance(theme)}
               multiline
               // The caret, the alignment and the punctuation all follow the
               // text, not the workspace.
@@ -1453,7 +1460,7 @@ const styles = StyleSheet.create({
   iconButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   sendCircle: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   errorBanner: { paddingHorizontal: 16, paddingVertical: 8 },
-  errorText: { color: ERROR_COLOR, fontSize: 12 },
+  errorText: { fontSize: 12 },
   strip: { maxHeight: 80 },
   stripItem: { width: 56, height: 56, marginBottom: 8 },
   pendingChip: {

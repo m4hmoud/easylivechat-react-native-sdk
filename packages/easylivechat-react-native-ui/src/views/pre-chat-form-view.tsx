@@ -15,7 +15,7 @@ import { Linking, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { useDirectionStyles } from '../direction';
 import type { Strings } from '../l10n';
-import { ERROR_COLOR, type EasyLiveChatTheme, withAlpha } from '../theme';
+import { type EasyLiveChatTheme, errorColorOf, withAlpha } from '../theme';
 import {
   ConsentField,
   FieldError,
@@ -226,7 +226,7 @@ export function PreChatFormView({
                 theme={theme}
                 onChange={(v) => setConsent(field.id, v)}
               />
-              {error != null ? <FieldError message={error} /> : null}
+              {error != null ? <FieldError message={error} theme={theme} /> : null}
             </View>
           );
         }
@@ -255,13 +255,13 @@ export function PreChatFormView({
                 theme={theme}
               />
             )}
-            {error != null ? <FieldError message={error} /> : null}
+            {error != null ? <FieldError message={error} theme={theme} /> : null}
           </View>
         );
       })}
 
       {formError != null ? (
-        <Text style={[styles.formError, dir.textStart]}>{formError}</Text>
+        <Text style={[styles.formError, dir.textStart, { color: errorColorOf(theme) }]}>{formError}</Text>
       ) : null}
 
       <View style={{ height: 8 }} />
@@ -293,5 +293,5 @@ const styles = StyleSheet.create({
   title: { fontSize: 22, fontWeight: '700' },
   subtitle: { fontSize: 15, lineHeight: 21, marginTop: 6 },
   field: { marginBottom: 16 },
-  formError: { color: ERROR_COLOR, fontSize: 13, marginBottom: 12 },
+  formError: { fontSize: 13, marginBottom: 12 },
 });

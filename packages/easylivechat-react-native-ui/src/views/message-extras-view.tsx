@@ -4,7 +4,7 @@ import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-na
 
 import { textDirectionOf } from '../bidi';
 import { type DirectionStyles, bubbleRadii, directionStyles, useDirectionStyles } from '../direction';
-import { type EasyLiveChatTheme, onColor, withAlpha } from '../theme';
+import { type EasyLiveChatTheme, inkOf, onColor, withAlpha } from '../theme';
 import { RemoteImage } from './remote-image';
 
 /**
@@ -32,7 +32,10 @@ export function ReplyChips({
   label: string;
   dir: DirectionStyles;
 }): React.JSX.Element {
+  // The brand FILLS a chosen chip; outlines and words are its ink, which in
+  // dark is nudged lighter until it reads on the dark ground.
   const accent = theme.primary;
+  const ink = inkOf(theme);
   return (
     <View accessibilityLabel={label} style={[styles.chips, { flexDirection: dir.row }]}>
       {labels.map((text, i) => {
@@ -48,7 +51,8 @@ export function ReplyChips({
             style={({ pressed }) => [
               styles.chip,
               {
-                borderColor: disabled && !isChosen ? withAlpha(accent, 0.5) : accent,
+                borderColor:
+                  isChosen || (pressed && !disabled) ? accent : disabled ? withAlpha(ink, 0.5) : ink,
                 backgroundColor: isChosen || (pressed && !disabled) ? accent : theme.background,
               },
             ]}
@@ -58,7 +62,7 @@ export function ReplyChips({
                 style={[
                   styles.chipText,
                   {
-                    color: isChosen || (pressed && !disabled) ? onColor(accent) : disabled ? withAlpha(accent, 0.5) : accent,
+                    color: isChosen || (pressed && !disabled) ? onColor(accent) : disabled ? withAlpha(ink, 0.5) : ink,
                     writingDirection: textDirectionOf(text) ?? dir.direction,
                   },
                 ]}
@@ -98,6 +102,7 @@ export function CardView({
 }): React.JSX.Element {
   const dir = useDirectionStyles();
   const accent = theme.primary;
+  const ink = inkOf(theme);
   const hairline = withAlpha(theme.text, 0.1);
   // Each run faces the way its own text reads — `dir="auto"` on the web — so
   // an English card in an Arabic workspace still starts at the left.
@@ -152,7 +157,7 @@ export function CardView({
                 style={[
                   styles.cardButtonText,
                   {
-                    color: chosen ? onColor(accent) : withAlpha(accent, dimmed ? 0.5 : 1),
+                    color: chosen ? onColor(accent) : withAlpha(ink, dimmed ? 0.5 : 1),
                     writingDirection: textDirectionOf(b.label) ?? dir.direction,
                   },
                 ]}
@@ -175,7 +180,7 @@ export function CardView({
             <Text
               style={[
                 styles.cardButtonText,
-                { color: accent, writingDirection: textDirectionOf(b.label) ?? dir.direction },
+                { color: ink, writingDirection: textDirectionOf(b.label) ?? dir.direction },
               ]}
             >
               {b.label}

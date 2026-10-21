@@ -31,15 +31,23 @@ export * from '@easylivechat/react-native';
 export {
   type EasyLiveChatTheme,
   ERROR_COLOR,
+  ERROR_COLOR_DARK,
   FALLBACK_THEME,
+  contrastRatio,
   deriveSurface,
+  errorColorOf,
+  inkOf,
+  inkOn,
+  keyboardAppearance,
   luminance,
+  mixColors,
   normalizeColor,
   onColor,
   parseHexColor,
   themeFromConfig,
   withAlpha,
 } from './theme';
+export { useEasyLiveChatTheme } from './use-theme';
 
 // ── direction / RTL ───────────────────────────────────────────────────────
 export {
@@ -104,7 +112,46 @@ export {
   type ClosedNoticeViewProps,
   ClosedNoticeBanner,
   ClosedNoticeView,
+  closedNoticeText,
 } from './views/closed-notice-view';
+export { type QueueNoticeProps, QueueNotice } from './views/queue-notice-view';
+export { QuickReactionRow, ReactionChips } from './views/reactions-view';
+export {
+  type EmojiPickerProps,
+  type EmojiPickerSheetProps,
+  EmojiPicker,
+  EmojiPickerSheet,
+} from './views/emoji-picker';
+export {
+  type EmojiCatalog,
+  type EmojiCategory,
+  type EmojiEntry,
+  EMOJI_CATEGORIES,
+  EMOJI_CATEGORY_ICON,
+  RECENT_EMOJI_MAX,
+  addRecentEmoji,
+  defaultEmojiCatalog,
+  emojiCatalog,
+  emojiCategoryKey,
+  recentEmoji,
+  searchEmoji,
+} from './emoji/emoji';
+export {
+  type EmailCardProps,
+  type EmailCardResult,
+  EMAIL_CARD_PATTERN,
+  EmailCard,
+} from './views/email-card';
+export {
+  type EasyLiveChatEmailTranscriptButtonProps,
+  type EmailTranscriptOffer,
+  AfterChatEmailOffer,
+  ChatEmailOffers,
+  EasyLiveChatEmailTranscriptButton,
+  openEmailTranscript,
+  useEmailTranscriptOffer,
+} from './email-offers';
+export { LinkPreviewCard } from './views/link-preview-card';
 export { type ElcImageViewerProps, ElcImageViewer } from './views/image-viewer';
 export {
   type ElcHelpApi,

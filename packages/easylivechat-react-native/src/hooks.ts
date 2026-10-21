@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
 import { EasyLiveChat } from './client';
 import type { EasyLiveChatError } from './errors';
 import type { ChatMessage } from './models/chat-message';
-import type { DeletedMessage, ProactiveMessage } from './models/results';
+import type { DeletedMessage, ProactiveMessage, QueueStatus } from './models/results';
 import type {
   AvailabilityReason,
   VisitorMode,
@@ -76,6 +76,24 @@ export function useUnreadCount(): number {
 
 export function useAgentLastReadAt(): Date | null {
   return useEasyLiveChatStore(EasyLiveChat.instance.agentLastReadAt);
+}
+
+/**
+ * Where the visitor stands in the queue for a person, or null when they are
+ * not waiting — a notice above the thread, which stays usable underneath.
+ */
+export function useQueueStatus(): QueueStatus | null {
+  return useEasyLiveChatStore(EasyLiveChat.instance.queue);
+}
+
+/** The workspace offers "Email me this chat" (`EasyLiveChat.emailTranscript`). */
+export function useTranscriptEmailEnabled(): boolean {
+  return useEasyLiveChatStore(EasyLiveChat.instance.transcriptEmailEnabled);
+}
+
+/** The workspace offers "Get the reply by email" (`EasyLiveChat.setVisitorEmail`). */
+export function useReplyEmailEnabled(): boolean {
+  return useEasyLiveChatStore(EasyLiveChat.instance.replyEmailEnabled);
 }
 
 export interface WorkspaceAvailabilityView {

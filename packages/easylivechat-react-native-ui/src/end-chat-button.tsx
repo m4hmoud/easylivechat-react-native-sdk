@@ -5,7 +5,8 @@ import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { DirectionProvider } from './direction';
 import { CloseIcon } from './icons';
 import { stringsFor } from './l10n';
-import { type EasyLiveChatTheme, onColor, themeFromConfig, withAlpha } from './theme';
+import { type EasyLiveChatTheme, onColor, withAlpha } from './theme';
+import { useEasyLiveChatTheme } from './use-theme';
 import { MAX_FONT_SCALE } from './text-scaling';
 
 export interface EasyLiveChatEndChatButtonProps {
@@ -46,12 +47,14 @@ export function EasyLiveChatEndChatButton({
   const phase = useEasyLiveChatPhase();
   const config = useWidgetConfig();
   const [confirming, setConfirming] = useState(false);
+  // Before the early return: a hook may not be skipped on some renders.
+  const ownTheme = useEasyLiveChatTheme(config);
 
   // Only a LIVE conversation can be ended; hidden otherwise (during the
   // survey, the pre-chat form, the offline notice…).
   if (phase !== 'chat') return null;
 
-  const resolved = theme ?? themeFromConfig(config);
+  const resolved = theme ?? ownTheme;
   const strings = stringsFor(locale ?? config?.locale);
 
   return (

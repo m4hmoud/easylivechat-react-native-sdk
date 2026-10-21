@@ -9,6 +9,7 @@ import {
   parseMessageDeliveryStatus,
   parseSenderType,
 } from './enums';
+import { type MessageReaction, parseReactions } from './reactions';
 
 /**
  * A rehosted attachment — the rich shape the server fills in once the media
@@ -139,6 +140,19 @@ export interface ChatMessage {
   editedAt?: Date;
 
   /**
+   * Reactions as the visitor may see them: their own on the team's messages,
+   * the team's on theirs — never an agent's name. Read them with
+   * `reactionsOf(m)`.
+   *
+   * Undefined when the wire carried no list at all (an older server, a
+   * partial row), which is not the same as `[]`: an update without the field
+   * keeps the reactions already on screen, while `[]` means the last one was
+   * taken back. Live changes arrive on `message:reactions`; see
+   * `EasyLiveChat.react`.
+   */
+  reactions?: MessageReaction[];
+
+  /**
    * True only for a locally-created optimistic message (id starts `tmp-`),
    * before the server `message:send` ack / echo reconciles it.
    */
@@ -202,6 +216,7 @@ export function parseChatMessage(raw: Record<string, unknown>): ChatMessage {
     readByAgent: raw.read === true || raw.readByAgentAt != null,
     createdAt: parseDate(raw.createdAt ?? raw.created_at),
     editedAt: parseOptionalDate(raw.editedAt ?? raw.edited_at),
+    reactions: parseReactions(raw.reactions),
     isOptimistic: false,
     failed: false,
     metadata:
@@ -378,6 +393,20 @@ export function receiptFor(m: ChatMessage, agentLastReadAt: Date | null): Messag
     return 'read';
   }
   return 'sent';
+}
+
+/**
+ * Keep the reactions a row without any would erase.
+ *
+ * `message:updated` carries the whole message again, and clients replace by
+ * id — but a server older than reactions, or a path that hands out a partial
+ * row, sends no `reactions` at all, and replacing wholesale would clear the
+ * chips under a bubble that had them. A row that does carry a list — even an
+ * empty one — always keeps its own: `[]` is the last reaction taken back.
+ */
+export function withReactionsFrom(next: ChatMessage, previous: ChatMessage): ChatMessage {
+  if (next.reactions !== undefined || previous.reactions === undefined) return next;
+  return { ...next, reactions: previous.reactions };
 }
 
 /** True when this row says nothing about who sent it. */

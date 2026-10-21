@@ -4,8 +4,14 @@ import { type ChatMessage, parseChatMessage } from './models/chat-message';
 import {
   type DeletedMessage,
   type ProactiveMessage,
+  type QueueUpdate,
+  type ReactAck,
+  type ReactionsUpdate,
   type SendAck,
   parseProactiveMessage,
+  parseQueueUpdate,
+  parseReactAck,
+  parseReactionsUpdate,
   parseSendAck,
 } from './models/results';
 import {
@@ -16,6 +22,7 @@ import {
 /** Bound the ack so a socket that drops between emit and ack still resolves. */
 const SEND_ACK_TIMEOUT_MS = 20_000;
 const END_CHAT_ACK_TIMEOUT_MS = 15_000;
+const REACT_ACK_TIMEOUT_MS = 10_000;
 
 export interface WidgetSocketHandlers {
   /** `message:new` — the raw Prisma row, already parsed leniently. */
@@ -31,6 +38,21 @@ export interface WidgetSocketHandlers {
    * It leaves the thread with no placeholder.
    */
   onMessageDeleted(deleted: DeletedMessage): void;
+  /**
+   * `message:reactions` — one message's reactions changed: the visitor's own,
+   * from another of their devices, or the team's on their message. Replace
+   * that message's list by id. Never a message: no chime, no unread.
+   *
+   * Optional for hand-rolled handler sets written before reactions existed.
+   */
+  onMessageReactions?(update: ReactionsUpdate): void;
+  /**
+   * `queue:update` — the visitor's place in the queue changed, or
+   * (`assigned`) a person took the chat. Optional, as above.
+   */
+  onQueueUpdate?(update: QueueUpdate): void;
+  /** `conversation:assigned` — a person took the chat; the wait is over. Optional, as above. */
+  onConversationAssigned?(): void;
   /** `agent:typing` from a person — requires an explicit `true`. */
   onAgentTyping(isTyping: boolean): void;
   /**
@@ -158,6 +180,21 @@ export class WidgetSocket {
       this.handlers.onMessageDeleted({ id, conversationId: String(m?.conversationId ?? '') });
     });
 
+    socket.on('message:reactions', (data: unknown) => {
+      const m = asRecord(data);
+      const update = m != null ? parseReactionsUpdate(m) : null;
+      if (update != null) this.handlers.onMessageReactions?.(update);
+    });
+
+    socket.on('queue:update', (data: unknown) => {
+      const m = asRecord(data);
+      if (m != null) this.handlers.onQueueUpdate?.(parseQueueUpdate(m));
+    });
+
+    socket.on('conversation:assigned', () => {
+      this.handlers.onConversationAssigned?.();
+    });
+
     socket.on('agent:typing', (data: unknown) => {
       // The server relays whatever the agent sent, `false` included. Require
       // an explicit `true` so a malformed or empty payload cannot show a
@@ -274,6 +311,40 @@ export class WidgetSocket {
     if (args.contentType != null) payload.contentType = args.contentType;
     if (args.reply != null) payload.reply = args.reply;
     return this.emitWithAck(socket, 'message:send', payload, SEND_ACK_TIMEOUT_MS);
+  }
+
+  /**
+   * Emit `message:react { messageId, emoji }` and await the ack — the
+   * visitor's reaction to one of the team's messages, or `emoji: null` to
+   * take it back. The ack carries the message's reactions as the server now
+   * holds them.
+   */
+  react(messageId: string, emoji: string | null): Promise<ReactAck> {
+    const socket = this.socket;
+    if (socket == null || !socket.connected) {
+      return Promise.resolve({ ok: false, error: 'NOT_CONNECTED' });
+    }
+    return new Promise<ReactAck>((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve({ ok: false, error: 'ACK_TIMEOUT' });
+      }, REACT_ACK_TIMEOUT_MS);
+      try {
+        socket.emit('message:react', { messageId, emoji }, (raw: unknown) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(parseReactAck(raw));
+        });
+      } catch (e) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ ok: false, error: describeError(e) });
+      }
+    });
   }
 
   /** Emit `typing { isTyping }` (the caller debounces). */

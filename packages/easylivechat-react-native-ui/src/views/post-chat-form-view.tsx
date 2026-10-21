@@ -11,7 +11,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useDirectionStyles } from '../direction';
 import { CheckCircleIcon } from '../icons';
 import type { Strings } from '../l10n';
-import { ERROR_COLOR, type EasyLiveChatTheme, withAlpha } from '../theme';
+import { type EasyLiveChatTheme, errorColorOf, inkOf, withAlpha } from '../theme';
 import {
   CheckboxRow,
   FieldError,
@@ -126,12 +126,12 @@ export function PostChatFormView({
   if (done) {
     return (
       <View style={[styles.centered, { backgroundColor: theme.background }]}>
-        <CheckCircleIcon color={theme.primary} size={44} />
+        <CheckCircleIcon color={inkOf(theme)} size={44} />
         <Text style={[styles.thanks, { color: theme.text }]}>{strings.t('thanksForFeedback')}</Text>
         {/* Somewhere to go once they are done. Previously the thanks screen
             was terminal: the survey submitted and then simply sat there. */}
         <Pressable onPress={onDone} accessibilityRole="button" style={{ padding: 12 }}>
-          <Text style={{ color: theme.primary, fontSize: 15 }}>{strings.t('closeChat')}</Text>
+          <Text style={{ color: inkOf(theme), fontSize: 15 }}>{strings.t('closeChat')}</Text>
         </Pressable>
       </View>
     );
@@ -213,13 +213,13 @@ export function PostChatFormView({
                 )}
               </>
             )}
-            {error != null ? <FieldError message={error} /> : null}
+            {error != null ? <FieldError message={error} theme={theme} /> : null}
           </View>
         );
       })}
 
       {formError != null ? (
-        <Text style={[styles.formError, dir.textStart]}>{formError}</Text>
+        <Text style={[styles.formError, dir.textStart, { color: errorColorOf(theme) }]}>{formError}</Text>
       ) : null}
 
       <PrimaryButton
@@ -252,7 +252,7 @@ const styles = StyleSheet.create({
   content: { padding: 20, paddingTop: 24, paddingBottom: 32 },
   title: { fontSize: 20, fontWeight: '700' },
   field: { marginBottom: 18 },
-  formError: { color: ERROR_COLOR, fontSize: 13, marginBottom: 12 },
+  formError: { fontSize: 13, marginBottom: 12 },
   skip: { alignItems: 'center', paddingVertical: 14, marginTop: 4 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 },
   thanks: { fontSize: 16, lineHeight: 22, textAlign: 'center', marginTop: 14, marginBottom: 12 },

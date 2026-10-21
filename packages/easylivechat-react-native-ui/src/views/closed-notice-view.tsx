@@ -1,5 +1,6 @@
 import {
   type WidgetConfig,
+  type WorkspaceAvailabilityView,
   EasyLiveChat,
   substituteVisitorVariables,
   useWorkspaceAvailability,
@@ -10,54 +11,88 @@ import { StyleSheet, Text, View } from 'react-native';
 import { useDirectionStyles } from '../direction';
 import { ChatBubbleIcon } from '../icons';
 import type { Strings } from '../l10n';
-import { type EasyLiveChatTheme, withAlpha } from '../theme';
+import { type EasyLiveChatTheme, inkOf, withAlpha } from '../theme';
 import { RemoteImage } from './remote-image';
 
 /**
- * The default closed notice.
+ * What the closed/busy notice says — the banner above the thread and the full
+ * closed screen alike. The web widget's `closedBannerText` (Embed.tsx), so a
+ * visitor reads the same sentence in either client:
  *
- * Being SHUT and being UNDERSTAFFED are different states and read differently
- * to a visitor: "back at 09:00" is actionable, "everyone's busy" is not. The
- * server tells us which via `reason`.
+ * 1. The business's own notice (`offlineInfoText`, Settings → Availability)
+ *    ALWAYS wins — their words, whatever the mode or the assistant.
+ * 2. With the composer locked (`NOTICE_ONLY`) nothing invites a message: the
+ *    reopening time IS the notice, else "we'll be back soon".
+ * 3. Busy is not shut: everyone's busy — or, while the AI assistant covers,
+ *    that it can help in the meantime.
+ * 4. Shut: "leave your message" — or, while the assistant covers, that it can
+ *    help — then the reopening time, which stays: it is when a PERSON is back.
+ *
+ * Deliberately NOT `offlineMessage`. That is the leave-a-message prompt from
+ * the widget's copy and carries a schema default nobody typed, so preferring
+ * it showed every visitor English, invited a message where none is taken, and
+ * buried the assistant's notice on the full screen. The server sends
+ * `offlineInfoText` as nothing unless a notice was actually written, so
+ * reaching step 2 means nobody wrote one — use ours, in the visitor's
+ * language.
+ *
+ * Kept from the SDK's own: a named closure ("We're closed for Eid al-Adha")
+ * tells the visitor more than a bare "we're offline", so a holiday says so
+ * while nobody covers.
  */
-function defaultNotice(
+export function closedNoticeText(
+  config: WidgetConfig | null,
   strings: Strings,
-  availability: ReturnType<typeof useWorkspaceAvailability>,
+  availability: Pick<
+    WorkspaceAvailabilityView,
+    'reason' | 'assistantCovers' | 'composerLocked' | 'closureLabel' | 'nextOpenLocal' | 'nextOpenAt'
+  >,
 ): string {
-  // With the assistant answering, "leave a message and we'll reply when we're
-  // back" is untrue — a reply arrives in seconds. The reopening time still
-  // matters: it is when a PERSON is back, so it stays. (False before `boot()`,
-  // so an unbooted notice reads as plainly closed.)
-  const covers = availability.assistantCovers;
+  const tenantNotice = config?.offlineInfoText?.trim() ?? '';
+  if (tenantNotice.length > 0) {
+    return substituteVisitorVariables(tenantNotice, {
+      name: EasyLiveChat.instance.visitorName,
+      defaultName: config?.defaultCustomerName,
+    });
+  }
 
+  const reopensAt = reopeningTime(availability);
+  const backAt = reopensAt != null ? strings.t('backAt').replace('{time}', reopensAt) : null;
+
+  if (availability.composerLocked) return backAt ?? strings.t('closedReadOnly');
+
+  // (False before `boot()`, so an unbooted notice reads as plainly closed.)
+  const covers = availability.assistantCovers;
   if (availability.reason === 'NO_AGENTS') {
     return strings.t(covers ? 'noAgentsAssistantNotice' : 'noAgentsNotice');
   }
 
-  // A named closure ("Closed for Eid al-Adha") tells the visitor far more than
-  // a generic "we're offline", so prefer it when the server sent one.
   const label = availability.closureLabel;
-  const head = covers
+  const closed = covers
     ? strings.t('closedAssistantNotice')
     : availability.reason === 'HOLIDAY' && label != null && label.length > 0
       ? strings.t('closedForLabel').replace('{label}', label)
       : strings.t('closedNotice');
+  return backAt != null ? `${closed} ${backAt}` : closed;
+}
 
-  // The BUSINESS's clock, formatted SERVER-SIDE. Rendering the instant here
-  // would use the device's zone — "back at 09:00" would read 07:00 to a
-  // visitor one country over, for a business that opens at nine.
+/**
+ * When we next open, on the BUSINESS's clock, formatted SERVER-SIDE.
+ * Rendering the instant here would use the device's zone — "back at 09:00"
+ * would read 07:00 to a visitor one country over, for a business that opens at
+ * nine. An older server sends only the instant, which is shown in device time
+ * rather than dropping the reopening time entirely.
+ */
+function reopeningTime(
+  availability: Pick<WorkspaceAvailabilityView, 'nextOpenLocal' | 'nextOpenAt'>,
+): string | null {
   const local = availability.nextOpenLocal;
-  if (local != null && local.length > 0) {
-    return `${head} ${strings.t('backAt').replace('{time}', local)}`;
-  }
-
-  // Older server: fall back to the instant in device-local time rather than
-  // dropping the reopening time entirely.
+  if (local != null && local.length > 0) return local;
   const next = availability.nextOpenAt;
-  if (next == null) return head;
+  if (next == null) return null;
   const hh = String(next.getHours()).padStart(2, '0');
   const mm = String(next.getMinutes()).padStart(2, '0');
-  return `${head} ${strings.t('backAt').replace('{time}', `${hh}:${mm}`)}`;
+  return `${hh}:${mm}`;
 }
 
 /**
@@ -76,10 +111,10 @@ function BusinessMark({
     <View
       style={[
         styles.mark,
-        { width: size, height: size, backgroundColor: withAlpha(theme.primary, 0.08) },
+        { width: size, height: size, backgroundColor: withAlpha(inkOf(theme), 0.08) },
       ]}
     >
-      <ChatBubbleIcon color={withAlpha(theme.primary, 0.55)} size={32} />
+      <ChatBubbleIcon color={withAlpha(inkOf(theme), 0.55)} size={32} />
     </View>
   );
   const url = logoUrl?.trim();
@@ -116,8 +151,8 @@ export interface ClosedNoticeViewProps {
  * write straight away. This view is the narrow fallback for tenants configured
  * to refuse new chats.
  *
- * Prefers the tenant's own wording (`offlineMessage`), falling back to the
- * localized default.
+ * Says what the banner would — {@link closedNoticeText} — under a title that
+ * states the situation on its own.
  */
 export function ClosedNoticeView({
   config,
@@ -125,14 +160,7 @@ export function ClosedNoticeView({
   strings,
 }: ClosedNoticeViewProps): React.JSX.Element {
   const availability = useWorkspaceAvailability();
-  const tenantCopy = config.offlineMessage.trim();
-  const message =
-    tenantCopy.length > 0
-      ? substituteVisitorVariables(tenantCopy, {
-          name: EasyLiveChat.instance.visitorName,
-          defaultName: config.defaultCustomerName,
-        })
-      : defaultNotice(strings, availability);
+  const message = closedNoticeText(config, strings, availability);
 
   return (
     <View style={[styles.centered, { backgroundColor: theme.background }]}>
@@ -156,9 +184,9 @@ export interface ClosedNoticeBannerProps {
  *
  * The visitor keeps a WORKING composer — their message becomes a PENDING
  * conversation that is auto-assigned when the team comes back — so this sets
- * the expectation about reply time rather than blocking anything. While the AI
- * assistant covers, it says the assistant can help in the meantime instead,
- * over the tenant's own copy too.
+ * the expectation about reply time rather than blocking anything. The words
+ * are {@link closedNoticeText}: the business's own notice when it wrote one,
+ * the assistant's while it covers, ours otherwise.
  */
 export function ClosedNoticeBanner({
   config,
@@ -167,16 +195,7 @@ export function ClosedNoticeBanner({
 }: ClosedNoticeBannerProps): React.JSX.Element {
   const dir = useDirectionStyles();
   const availability = useWorkspaceAvailability();
-  // The tenant's own offline copy is a leave-a-message prompt, and the same
-  // untruth while the assistant covers, so the assistant notice wins then.
-  const tenantCopy = config?.offlineMessage.trim() ?? '';
-  const message =
-    !availability.assistantCovers && tenantCopy.length > 0
-      ? substituteVisitorVariables(tenantCopy, {
-          name: EasyLiveChat.instance.visitorName,
-          defaultName: config?.defaultCustomerName,
-        })
-      : defaultNotice(strings, availability);
+  const message = closedNoticeText(config, strings, availability);
 
   return (
     <View

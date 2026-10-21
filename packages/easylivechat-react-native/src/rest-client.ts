@@ -4,11 +4,15 @@ import {
   type FeedbackResult,
   type MessagePage,
   type SessionResult,
+  type TranscriptResult,
   type UploadedFile,
+  type VisitorEmailResult,
+  type VisitorEmailState,
   parseFeedbackResult,
   parseMessagePage,
   parseSessionResult,
   parseUploadedFile,
+  parseVisitorEmailState,
 } from './models/results';
 import {
   type HelpArticle,
@@ -74,25 +78,13 @@ export interface SessionArgs {
 }
 
 /**
- * The device platform a visitor push registration is filed under.
+ * The device platform the deprecated `setPushToken` took. Kept so a host that
+ * still calls it keeps compiling; the SDK no longer registers devices.
  *
- * Bookkeeping, not routing: the server sends through FCM on both, iOS
- * included, so this is what the dashboard and a data export show for the
- * device. `Platform.OS === 'ios' ? 'IOS' : 'ANDROID'` is the usual line.
+ * @deprecated App notifications are your server's job now, driven by the
+ * workspace's `message.created` webhook — see `EasyLiveChat.setPushToken`.
  */
 export type PushPlatform = 'IOS' | 'ANDROID';
-
-/** Arguments of `POST /:slug/push/register`. */
-export interface RegisterPushArgs {
-  /** The widget JWT — the server takes the tenant and contact from it. */
-  token: string;
-  /** The device's FCM registration token. */
-  pushToken: string;
-  platform: PushPlatform;
-  /** Picks the language of the wording the server writes ("Sent a photo"). */
-  locale?: string;
-  appVersion?: string;
-}
 
 /** Arguments of `GET /help/articles`. */
 export interface HelpListArgs {
@@ -286,43 +278,28 @@ export class RestClient {
     return parseSessionResult(asRecord(raw));
   }
 
-  // ── visitor push (Bearer token) ─────────────────────────────────────────
-
   /**
-   * `POST /:slug/push/register` — the device to notify when an agent replies
-   * and this app is closed.
-   *
-   * Authed by the widget token, and identity comes from it ALONE: the body
-   * carries a push token and a platform, never a tenant, contact or
-   * conversation, so nobody holding a slug can file a device against someone
-   * else's contact. The server upserts by push token, so registering a device
-   * it already knows moves it to this contact rather than failing.
+   * `POST /:slug/resume-link { token }` — public. Trades the token in an
+   * emailed "Reply in the chat" link for the visitor id that reaches its
+   * conversation, which the client then adopts and resumes as. `410
+   * LINK_INVALID` for a link that has expired, is another workspace's, or
+   * names a chat that is gone.
    */
-  async registerPush(args: RegisterPushArgs): Promise<void> {
-    const body: Record<string, unknown> = {
-      token: args.pushToken,
-      // The server upper-cases it too; done here so a lower-case value never
-      // reaches a log or a test as anything but the canonical spelling.
-      platform: String(args.platform).toUpperCase(),
+  async postResumeLink(token: string): Promise<{ visitorId: string; conversationId: string | null }> {
+    const raw = asRecord(await this.postJson(`${this.base}/${this.slug}/resume-link`, { token }));
+    const visitorId = typeof raw.visitorId === 'string' ? raw.visitorId.trim() : '';
+    if (visitorId.length === 0) {
+      // A 2xx without a visitor is a protocol violation, not a visitor to adopt.
+      throw new EasyLiveChatError(EasyLiveChatErrorCode.UNKNOWN, {
+        message: 'POST /resume-link response missing a `visitorId`.',
+      });
+    }
+    const conversationId = raw.conversationId;
+    return {
+      visitorId,
+      conversationId:
+        typeof conversationId === 'string' && conversationId.length > 0 ? conversationId : null,
     };
-    const locale = emptyToUndefined(args.locale?.trim());
-    if (locale != null) body.locale = locale;
-    const appVersion = emptyToUndefined(args.appVersion?.trim());
-    if (appVersion != null) body.appVersion = appVersion;
-    await this.postJson(`${this.base}/${this.slug}/push/register`, body, args.token);
-  }
-
-  /**
-   * `POST /:slug/push/unregister` — stop notifying this device. Scoped
-   * server-side to the contact the widget token speaks for, so a token can
-   * only silence its own person's device.
-   */
-  async unregisterPush(args: { token: string; pushToken: string }): Promise<void> {
-    await this.postJson(
-      `${this.base}/${this.slug}/push/unregister`,
-      { token: args.pushToken },
-      args.token,
-    );
   }
 
   // ── help articles (public, no token) ────────────────────────────────────
@@ -484,6 +461,54 @@ export class RestClient {
       body,
       args.token,
     );
+  }
+
+  /**
+   * `POST /:slug/conversations/:id/transcript { email? }` — Bearer token; the
+   * token's conversationId must equal `conversationId`. "Email me this chat":
+   * to `email`, or to the address the contact already has when it is left
+   * out. Errors arrive as the server's codes — `NO_CONTACT_EMAIL`,
+   * `INVALID_EMAIL`, `EMAIL_UNSUBSCRIBED`, `TRANSCRIPT_DISABLED`,
+   * `TRANSCRIPT_RATE_LIMITED`.
+   */
+  async postTranscript(args: {
+    token: string;
+    conversationId: string;
+    email?: string;
+  }): Promise<TranscriptResult> {
+    const body: Record<string, unknown> = {};
+    if (args.email != null && args.email.length > 0) body.email = args.email;
+    const raw = await this.postJson(
+      `${this.base}/${this.slug}/conversations/${encodeURIComponent(args.conversationId)}/transcript`,
+      body,
+      args.token,
+    );
+    const sentTo = asRecord(raw).sentTo;
+    return { sentTo: typeof sentTo === 'string' ? sentTo : '' };
+  }
+
+  /**
+   * `GET /:slug/visitor-email` — Bearer token: the address on the visitor's
+   * contact, masked, and whether the workspace offers each email.
+   */
+  async getVisitorEmail(args: { token: string }): Promise<VisitorEmailState> {
+    const raw = await this.getJson(`${this.base}/${this.slug}/visitor-email`, {}, args.token);
+    return parseVisitorEmailState(asRecord(raw));
+  }
+
+  /**
+   * `POST /:slug/visitor-email { email }` — Bearer token: "Get the reply by
+   * email". Answers the address as the contact now holds it, masked. Errors:
+   * `INVALID_EMAIL`, `EMAIL_UNSUBSCRIBED`.
+   */
+  async postVisitorEmail(args: { token: string; email: string }): Promise<VisitorEmailResult> {
+    const raw = await this.postJson(
+      `${this.base}/${this.slug}/visitor-email`,
+      { email: args.email },
+      args.token,
+    );
+    const hint = asRecord(raw).emailHint;
+    return { emailHint: typeof hint === 'string' ? hint : '' };
   }
 
   /**

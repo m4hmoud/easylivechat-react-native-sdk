@@ -37,9 +37,13 @@ Bun workspaces, run from `react-native-sdk/`:
 ```sh
 bun install          # resolve the workspace
 bun run typecheck    # tsc --noEmit across both packages
-bun run test         # vitest (173 tests)
+bun run test         # vitest
 bun run build        # ESM + CJS + .d.ts for both packages
 ```
+
+> On a fresh checkout, build before typechecking: the UI package reads the
+> core's types from its built `lib/index.d.ts`, so its `tsc` cannot find
+> `@easylivechat/react-native` until the core has been built once.
 
 > `bunfig.toml` pins a **hoisted** node_modules layout. Metro cannot resolve
 > Bun's default isolated layout — `@expo/metro-config` requires its own
@@ -99,9 +103,9 @@ for exactly this reason.
 ## Non-goals
 
 Any server change, agent-side features, web support, and `customCss`. See the
-package READMEs. (Background push for visitors is supported —
-`EasyLiveChat.instance.setPushToken()` — over the server's existing visitor
-push registry.)
+package READMEs. Notifications to your app's users are your own server's to
+send, from the workspace's `message.created` webhook — the core README's
+"Notifications" has the recipe; `setPushToken()` is a deprecated no-op.
 
 ## License
 

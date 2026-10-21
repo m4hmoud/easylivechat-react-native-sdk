@@ -28,7 +28,7 @@ import { type Direction, directionStyles, useDirectionStyles } from '../directio
 import { ArticleIcon, BackIcon, ChevronIcon, CloseIcon, SearchIcon } from '../icons';
 import type { Strings } from '../l10n';
 import { MAX_FONT_SCALE } from '../text-scaling';
-import { type EasyLiveChatTheme, withAlpha } from '../theme';
+import { type EasyLiveChatTheme, inkOf, keyboardAppearance, withAlpha } from '../theme';
 import { PrimaryButton } from './form-controls';
 import { type ElcOpenLink, HelpMarkdownView } from './help-markdown-view';
 
@@ -460,6 +460,7 @@ function HelpListView({
           onSubmitEditing={onSubmit}
           placeholder={strings.t('helpSearchPlaceholder')}
           placeholderTextColor={withAlpha(theme.text, 0.4)}
+          keyboardAppearance={keyboardAppearance(theme)}
           accessibilityLabel={strings.t('helpSearchPlaceholder')}
           returnKeyType="search"
           autoCorrect={false}
@@ -525,7 +526,7 @@ function HelpArticleRow({
       ]}
     >
       <View style={styles.rowIcon}>
-        <ArticleIcon color={withAlpha(theme.primary, 0.85)} size={20} />
+        <ArticleIcon color={withAlpha(inkOf(theme), 0.85)} size={20} />
       </View>
       <View style={styles.rowBody}>
         {article.category != null ? (
@@ -737,7 +738,7 @@ function StartChatCard({
 function Spinner({ theme, strings }: { theme: EasyLiveChatTheme; strings: Strings }): React.JSX.Element {
   return (
     <View style={styles.spinner}>
-      <ActivityIndicator size="large" color={theme.primary} accessibilityLabel={strings.t('helpLoading')} />
+      <ActivityIndicator size="large" color={inkOf(theme)} accessibilityLabel={strings.t('helpLoading')} />
     </View>
   );
 }
@@ -757,7 +758,7 @@ function Failure({
         {strings.t('helpLoadFailed')}
       </Text>
       <Pressable onPress={onRetry} accessibilityRole="button" hitSlop={8} style={styles.retry}>
-        <Text maxFontSizeMultiplier={MAX_FONT_SCALE} style={[styles.retryLabel, { color: theme.primary }]}>
+        <Text maxFontSizeMultiplier={MAX_FONT_SCALE} style={[styles.retryLabel, { color: inkOf(theme) }]}>
           {strings.t('retry')}
         </Text>
       </Pressable>

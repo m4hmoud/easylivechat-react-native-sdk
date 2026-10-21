@@ -92,7 +92,34 @@ export {
   systemI18nKey,
   systemI18nParam,
   withIdentityFrom,
+  withReactionsFrom,
 } from './models/chat-message';
+
+export {
+  type MessageReaction,
+  type ReactionBy,
+  type ReactionGroup,
+  QUICK_REACTIONS,
+  REACTION_EMOJI_MAX_LENGTH,
+  canReactTo,
+  groupReactions,
+  myReaction,
+  parseReactions,
+  reactionsOf,
+  sameEmoji,
+  sameReactions,
+  toggledReaction,
+  withMyReaction,
+} from './models/reactions';
+
+export {
+  type LinkPreview,
+  LINK_PREVIEW_LIMITS,
+  isSafePreviewImage,
+  linkPreviewOf,
+  parseLinkPreview,
+  previewHost,
+} from './models/link-preview';
 
 export {
   type BotButton,
@@ -144,14 +171,20 @@ export {
 export {
   type AvailabilityReason,
   type ConfigResponse,
+  type LauncherSize,
   type VisitorMode,
+  type WidgetColorScheme,
   type WidgetConfig,
   type WorkspaceAvailability,
+  LAUNCHER_LABEL_MAX,
+  LAUNCHER_PX,
   isNoticeOnly,
   isWorkspaceClosed,
   parseConfigResponse,
   parseWidgetConfig,
+  parseColorScheme,
   parseWorkspaceAvailability,
+  resolveColorScheme,
   substituteVisitorVariables,
 } from './models/widget-config';
 
@@ -160,19 +193,30 @@ export {
   type FeedbackResult,
   type MessagePage,
   type ProactiveMessage,
+  type QueueStatus,
+  type QueueUpdate,
+  type ReactAck,
+  type ReactionsUpdate,
   type SendAck,
   type SendResult,
   type SessionResult,
   type StoredProfile,
+  type TranscriptResult,
   type UploadedFile,
+  type VisitorEmailResult,
+  type VisitorEmailState,
   parseFeedbackResult,
   parseMessagePage,
   parseProactiveMessage,
+  parseQueueUpdate,
+  parseReactAck,
+  parseReactionsUpdate,
   parseSendAck,
   parseSessionResult,
   parseStoredProfile,
   parseUnsentIds,
   parseUploadedFile,
+  parseVisitorEmailState,
   serializeStoredProfile,
 } from './models/results';
 
@@ -214,7 +258,6 @@ export {
 export {
   type HelpListArgs,
   type PushPlatform,
-  type RegisterPushArgs,
   type SessionArgs,
   type UploadArgs,
   type UploadSource,
@@ -241,6 +284,9 @@ export {
   useOnMessage,
   useOnMessageDeleted,
   useOnProactiveMessage,
+  useQueueStatus,
+  useReplyEmailEnabled,
+  useTranscriptEmailEnabled,
   useUnreadCount,
   useWidgetConfig,
   useWorkspaceAvailability,
@@ -251,7 +297,11 @@ export {
 // visitor id's random source is INJECTED rather than probed. See uuid.ts.
 export { setUuidGenerator, uuidV4 } from './internal/uuid';
 
+// ── emailed links ─────────────────────────────────────────────────────────
+export { resumeLinkToken } from './internal/resume-link';
+
 // ── push ──────────────────────────────────────────────────────────────────
-// `EasyLiveChat.instance.setPushToken()` is the API; this is the old stub's
-// name, kept as a deprecated alias that forwards to it.
+// Deprecated no-ops, like `EasyLiveChat.instance.setPushToken()`: notifying
+// your app's users is your own server's job, from the `message.created`
+// webhook. Kept so a host that wired them up keeps compiling.
 export { EasyLiveChatPush } from './push';

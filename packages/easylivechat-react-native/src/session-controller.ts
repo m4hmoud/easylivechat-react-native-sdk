@@ -21,7 +21,14 @@ import {
   parseChatMessage,
   systemI18nKey,
   withIdentityFrom,
+  withReactionsFrom,
 } from './models/chat-message';
+import {
+  REACTION_EMOJI_MAX_LENGTH,
+  canReactTo,
+  sameReactions,
+  withMyReaction,
+} from './models/reactions';
 import {
   type PreChatField,
   validateConsents,
@@ -32,10 +39,16 @@ import {
   type FeedbackResult,
   type MessagePage,
   type ProactiveMessage,
+  type QueueStatus,
+  type QueueUpdate,
+  type ReactionsUpdate,
   type SendResult,
   type SessionResult,
   type StoredProfile,
+  type TranscriptResult,
   type UploadedFile,
+  type VisitorEmailResult,
+  type VisitorEmailState,
   parseStoredProfile,
   serializeStoredProfile,
 } from './models/results';
@@ -47,7 +60,8 @@ import {
   isWorkspaceClosed,
 } from './models/widget-config';
 import { PresenceSocket } from './presence-socket';
-import { type PushPlatform, RestClient, type UploadSource } from './rest-client';
+import { RestClient, type UploadSource } from './rest-client';
+import { resumeLinkToken } from './internal/resume-link';
 import { type Store, createStore } from './store';
 import { type EasyLiveChatStorage, StorageKeys } from './storage';
 import { WidgetSocket } from './widget-socket';
@@ -239,6 +253,28 @@ export class SessionController {
   readonly unreadCount: Store<number> = createStore(0);
 
   /**
+   * Where the visitor stands while they wait for a person, or null when they
+   * are not waiting. From the session response, then `queue:update`; cleared
+   * the moment anyone from the team is there — the chat assigned, a team
+   * message, someone (or the assistant) typing — as the web widget does. The
+   * conversation stays usable underneath it the whole time.
+   */
+  readonly queue: Store<QueueStatus | null> = createStore<QueueStatus | null>(null);
+
+  /**
+   * Whether the workspace offers "Email me this chat", from `GET /config`.
+   * See {@link emailTranscript}.
+   */
+  readonly transcriptEmailEnabled: Store<boolean> = createStore(false);
+
+  /**
+   * Whether the workspace offers "Get the reply by email", from `GET /config`:
+   * ask the visitor for an address once they have written while nobody can
+   * answer, and their contact has none. See {@link setVisitorEmail}.
+   */
+  readonly replyEmailEnabled: Store<boolean> = createStore(false);
+
+  /**
    * How far into the thread an agent has read: everything the visitor sent at
    * or before this instant has been seen.
    *
@@ -352,25 +388,6 @@ export class SessionController {
    */
   private pendingIdentityOp: (() => void) | null = null;
 
-  // ── visitor push ──
-  //
-  // The device token the host handed over, and the one the server currently
-  // has on file for this visitor. They differ while a registration is held
-  // (no session token to authenticate it yet) or in flight — exactly the
-  // window the queue exists for.
-  private pushToken: string | null = null;
-  private pushPlatform: PushPlatform | null = null;
-  private pushAppVersion: string | undefined;
-  private registeredPushToken: string | null = null;
-
-  /**
-   * Register/unregister calls, one at a time and in order. A rotation is an
-   * unregister then a register, and two rotations in quick succession must not
-   * interleave into a dead row that keeps receiving this person's replies.
-   * Never rejects.
-   */
-  private pushChain: Promise<void> = Promise.resolve();
-
   /**
    * The running {@link open}, and the identity epoch it runs under. A second
    * call joins it — two overlapping opens would each find nothing to resume
@@ -384,6 +401,14 @@ export class SessionController {
 
   private token: string | null = null;
   private conversationIdValue: string | null = null;
+
+  /**
+   * The conversation that just ended and the token minted for it, kept after
+   * {@link finishEndedSession} lets the session go — what "Email me this chat"
+   * and the address on file are asked with on the screen after the chat.
+   * Dropped when a session starts again or the visitor changes.
+   */
+  private endedSession: { conversationId: string; token: string } | null = null;
 
   /**
    * Which conversation the LIVE socket handshook with. The server binds that
@@ -687,8 +712,8 @@ export class SessionController {
    * signs out and `reset()` would be too much.
    *
    * When this device's visitor WAS identified with a `userId`, the visitor is
-   * forgotten as well — a fresh visitorId, no conversation to resume, the
-   * previous person's push registration dropped — because the next person to
+   * forgotten as well — a fresh visitorId, no conversation to resume —
+   * because the next person to
    * open the chat may be someone else ({@link visitorChangeFor}); a chat on
    * screen restarts as an anonymous visitor. `EasyLiveChat.reset()` remains
    * the full logout that also abandons the visitorId in every case.
@@ -766,26 +791,40 @@ export class SessionController {
    * Returns whether a chat was open (any phase but idle).
    */
   private switchVisitor(): boolean {
+    const wasOpen = this.dropVisitorSession();
+
+    // The previous person's identity goes with them.
+    this.hasIdentity = false;
+    this.identityName = undefined;
+    this.identityEmail = undefined;
+    this.phone = undefined;
+    this.identityFields = undefined;
+    this.profile = null;
+
+    const vid = uuidV4();
+    this.visitorIdValue = vid;
+    // Nothing can be resumed under an id that did not exist a moment ago.
+    this.freshVisitor = true;
+    this.enqueueStorage(async () => {
+      for (const key of StorageKeys.identity) await this.storage.delete(key);
+      await this.storage.write(StorageKeys.visitorId, vid);
+    });
+
+    if (wasOpen) this.setPhase('idle');
+    return wasOpen;
+  }
+
+  /**
+   * Let go of everything the current visitor's session left in memory — the
+   * socket, the conversation, the thread — and bump the identity epoch, so a
+   * session request still in flight for them is dropped rather than adopted.
+   * The identity and the visitor id are the caller's to replace.
+   *
+   * Returns whether a chat was open (any phase but idle).
+   */
+  private dropVisitorSession(): boolean {
     this.identityEpoch++;
     const wasOpen = this.phase.get() !== 'idle';
-
-    // Stop the previous person's replies notifying this device. The next
-    // registration would move the device anyway (the server upserts by push
-    // token), but only once the new person opens a chat — until then the lock
-    // screen would keep showing someone else's conversation. Captured before
-    // the session is dropped below; the device token itself stays, it is the
-    // device's and the new person's session registers it again.
-    const stalePush = this.registeredPushToken ?? this.pushToken;
-    const staleToken = this.token;
-    this.registeredPushToken = null;
-    if (stalePush != null) {
-      // Queued AHEAD of the forget below: on a cold start the only copy of the
-      // previous person's widget token is the stored one.
-      this.enqueueStorage(async () => {
-        const token = staleToken ?? (await this.readStoredToken());
-        if (token != null) this.unregisterPushBestEffort(token, stalePush);
-      });
-    }
 
     this.stopHeartbeat();
     this.teardownSocket();
@@ -807,26 +846,9 @@ export class SessionController {
     this.agentTyping.set(false);
     this.assistantTyping.set(false);
     this.agentLastReadAt.set(null);
+    this.queue.set(null);
     this.connection.set('disconnected');
-
-    // The previous person's identity goes with them.
-    this.hasIdentity = false;
-    this.identityName = undefined;
-    this.identityEmail = undefined;
-    this.phone = undefined;
-    this.identityFields = undefined;
-    this.profile = null;
-
-    const vid = uuidV4();
-    this.visitorIdValue = vid;
-    // Nothing can be resumed under an id that did not exist a moment ago.
-    this.freshVisitor = true;
-    this.enqueueStorage(async () => {
-      for (const key of StorageKeys.identity) await this.storage.delete(key);
-      await this.storage.write(StorageKeys.visitorId, vid);
-    });
-
-    if (wasOpen) this.setPhase('idle');
+    this.endedSession = null;
     return wasOpen;
   }
 
@@ -898,6 +920,8 @@ export class SessionController {
     this.nextOpenLocal.set(res.nextOpenLocal ?? null);
     this.workspaceTimezone.set(res.timezone ?? null);
     this.assistantCovers.set(res.assistantCovers);
+    this.transcriptEmailEnabled.set(res.transcriptEmailEnabled);
+    this.replyEmailEnabled.set(res.replyEmailEnabled);
     return res.config;
   }
 
@@ -1029,6 +1053,8 @@ export class SessionController {
       this.nextOpenLocal.set(res.nextOpenLocal ?? null);
       this.workspaceTimezone.set(res.timezone ?? null);
       this.assistantCovers.set(res.assistantCovers);
+      this.transcriptEmailEnabled.set(res.transcriptEmailEnabled);
+      this.replyEmailEnabled.set(res.replyEmailEnabled);
       this.chatAvailabilityMode = res.chatAvailabilityMode;
       this.asyncEnabled = res.asyncEnabled;
 
@@ -1236,15 +1262,19 @@ export class SessionController {
     if (res.conversationId != null) {
       await this.storage.write(StorageKeys.conversationId, res.conversationId);
     }
-
-    // A push registration held for want of a session token can go now.
-    void this.syncPush();
+    // A live session again: the chat that ended before it is no longer the
+    // one "Email me this chat" means.
+    this.endedSession = null;
 
     // Cleared BEFORE the seed, not after: the watermark only ever moves
     // forward, so one carried over from a previous conversation would outrank
     // anything this thread's history has to say and show its first messages as
     // already read.
     this.agentLastReadAt.set(null);
+    // The queue as the session states it — a resume that finds the visitor
+    // still waiting puts the notice straight back, rather than leaving it to
+    // the next `queue:update`, which may be minutes away.
+    this.queue.set(res.queue);
     this.forgetUnsent(res.unsentIds, res.conversationId);
     this.setMessages(dedupSort(res.messages.filter((m) => !this.unsentIds.has(m.id))));
     this.connectSocket();
@@ -1424,6 +1454,179 @@ export class SessionController {
     this.socket?.reportSeen();
   }
 
+  // ── reactions ───────────────────────────────────────────────────────────
+
+  /**
+   * React to one of the team's messages with `emoji`, or take the visitor's
+   * reaction back (`null`). One reaction per message: another emoji replaces
+   * theirs. `toggledReaction(message, emoji)` says which a tap on a chip
+   * means.
+   *
+   * Shown at once and put back if the server says no — the web widget's
+   * `handleReact`. Resolves true once the server holds it; false (with the
+   * thread as it was) when it refused, the socket is down, or the message
+   * cannot take a reaction (`canReactTo`): the visitor's own, a system
+   * notice, one still being sent. Never rejects.
+   */
+  async react(messageId: string, emoji: string | null): Promise<boolean> {
+    const socket = this.socket;
+    if (socket == null || !socket.isConnected) return false;
+    if (emoji != null && (emoji.length === 0 || emoji.length > REACTION_EMOJI_MAX_LENGTH)) return false;
+    const held = this.messages.get().find((m) => m.id === messageId);
+    if (held == null || !canReactTo(held)) return false;
+    const before = held.reactions;
+    this.setReactions(messageId, withMyReaction(before, emoji));
+    const ack = await socket.react(messageId, emoji);
+    if (this.disposed) return false;
+    if (ack.ok) {
+      // The server's word is final — it may hold a reaction from another of
+      // the visitor's devices that this one has not heard of yet.
+      if (ack.reactions !== undefined) this.setReactions(messageId, ack.reactions);
+      return true;
+    }
+    this.setReactions(messageId, before ?? []);
+    return false;
+  }
+
+  /** `message:reactions` — the message's whole list after a change. */
+  private handleReactions(update: ReactionsUpdate): void {
+    if (
+      update.conversationId.length > 0 &&
+      this.conversationIdValue != null &&
+      update.conversationId !== this.conversationIdValue
+    ) {
+      return;
+    }
+    this.setReactions(update.messageId, update.reactions);
+  }
+
+  /** Replace one held message's reactions; a message not held is left alone. */
+  private setReactions(messageId: string, reactions: ChatMessage['reactions']): void {
+    const list = this.messages.get();
+    const idx = list.findIndex((m) => m.id === messageId);
+    if (idx === -1) return;
+    const held = list[idx] as ChatMessage;
+    if (held.reactions !== undefined && sameReactions(held.reactions, reactions)) return;
+    const next = [...list];
+    next[idx] = { ...held, reactions };
+    this.setMessages(next);
+  }
+
+  // ── the queue ───────────────────────────────────────────────────────────
+
+  private handleQueueUpdate(update: QueueUpdate): void {
+    if (update.assigned) {
+      this.queue.set(null);
+      return;
+    }
+    this.queue.set({ position: update.position, minutes: update.minutes, text: update.text });
+  }
+
+  /** Someone from the team is here now: the wait is over. */
+  private leaveQueue(): void {
+    if (this.queue.get() != null) this.queue.set(null);
+  }
+
+  // ── email to the visitor ────────────────────────────────────────────────
+  //
+  // The web widget's "Email me this chat" and "Get the reply by email", over
+  // the same endpoints. Each needs a widget token: the live session's, or —
+  // on the screen after a chat — the one minted for the conversation that just
+  // ended. Addresses come back masked; the device may not be the visitor's own.
+
+  /**
+   * "Email me this chat": the server sends this conversation — or the one
+   * that just ended — to `email`, or, with none given, to the address the
+   * visitor's contact already has (the pre-chat form's, a saved one, an
+   * `identify()`'d one).
+   *
+   * Offer it only while {@link transcriptEmailEnabled} is true. Rejects with
+   * an `EasyLiveChatError`: `NO_CONTACT_EMAIL` when no address was given and
+   * none is on file (ask for one), `INVALID_EMAIL`, `EMAIL_UNSUBSCRIBED`,
+   * `TRANSCRIPT_RATE_LIMITED`, `TRANSCRIPT_DISABLED`, `NO_TOKEN` before there
+   * is any conversation, or a transport failure. Resolves with the address it
+   * went to, masked by the server.
+   */
+  async emailTranscript(options: { email?: string } | string = {}): Promise<TranscriptResult> {
+    const typed = (typeof options === 'string' ? options : options.email)?.trim();
+    const email = typed != null && typed.length > 0 ? typed : undefined;
+    const conversationId = this.conversationIdValue;
+    if (this.token != null && conversationId != null) {
+      return this.guardAuth(() =>
+        this.rest.postTranscript({
+          // Read again inside: `guardAuth` re-runs this after a re-mint.
+          token: this.token ?? '',
+          conversationId,
+          email,
+        }),
+      );
+    }
+    const ended = this.endedSession;
+    if (ended != null) {
+      // Not through `guardAuth`: its re-mint is a resume, and resuming a
+      // closed conversation re-opens it.
+      return this.rest.postTranscript({
+        token: ended.token,
+        conversationId: ended.conversationId,
+        email,
+      });
+    }
+    throw new EasyLiveChatError(EasyLiveChatErrorCode.NO_TOKEN, {
+      message: 'No conversation to email — call open()/startSession() first.',
+    });
+  }
+
+  /**
+   * The address on the visitor's contact — masked (`a•••@example.com`), or
+   * null when there is none — and what the workspace offers: the state the
+   * two email offers are decided from. "Get the reply by email" is only worth
+   * asking someone with no address on file.
+   *
+   * Rejects with `NO_TOKEN` before there is a conversation.
+   */
+  async visitorEmail(): Promise<VisitorEmailState> {
+    if (this.token != null) {
+      return this.guardAuth(() => this.rest.getVisitorEmail({ token: this.token ?? '' }));
+    }
+    const ended = this.endedSession;
+    if (ended != null) return this.rest.getVisitorEmail({ token: ended.token });
+    throw new EasyLiveChatError(EasyLiveChatErrorCode.NO_TOKEN, {
+      message: "The visitor's email needs a conversation — call open()/startSession() first.",
+    });
+  }
+
+  /**
+   * "Get the reply by email": keep `email` on the visitor's contact, so a
+   * reply that comes after they have left still reaches them. Offer it while
+   * {@link replyEmailEnabled} is true, to a visitor whose contact has no
+   * address ({@link visitorEmail}).
+   *
+   * Resolves with the address as the contact now holds it, masked — which is
+   * the one already on file when the visitor is identity-verified with a
+   * different one; the server does not replace a verified address from the
+   * device. Rejects with `INVALID_EMAIL` (a blank one is refused here, before
+   * the network), `EMAIL_UNSUBSCRIBED`, or `NO_TOKEN` before there is a
+   * conversation.
+   */
+  async setVisitorEmail(email: string): Promise<VisitorEmailResult> {
+    const address = email.trim();
+    if (address.length === 0) {
+      throw new EasyLiveChatError(EasyLiveChatErrorCode.INVALID_EMAIL, {
+        message: 'An email address is required.',
+      });
+    }
+    if (this.token != null) {
+      return this.guardAuth(() =>
+        this.rest.postVisitorEmail({ token: this.token ?? '', email: address }),
+      );
+    }
+    const ended = this.endedSession;
+    if (ended != null) return this.rest.postVisitorEmail({ token: ended.token, email: address });
+    throw new EasyLiveChatError(EasyLiveChatErrorCode.NO_TOKEN, {
+      message: "Saving the visitor's email needs a conversation — call open()/startSession() first.",
+    });
+  }
+
   // ── attachments ─────────────────────────────────────────────────────────
 
   /** Upload via the current widget JWT; returns the first array element. */
@@ -1576,6 +1779,12 @@ export class SessionController {
    * post-chat step was spent.
    */
   private finishEndedSession(): void {
+    // Kept for "Email me this chat" on the screen after the chat: the server
+    // sends the transcript of the conversation its token was minted for, and
+    // nothing else reaches that conversation once the session is let go of.
+    if (this.token != null && this.conversationIdValue != null) {
+      this.endedSession = { conversationId: this.conversationIdValue, token: this.token };
+    }
     this.teardownSocket();
     this.socketConversationId = null;
     this.conversationIdValue = null;
@@ -1583,6 +1792,7 @@ export class SessionController {
     // Belongs to the conversation being let go of, and only moves forward —
     // left set, it would rule the next one's opening messages already read.
     this.agentLastReadAt.set(null);
+    this.queue.set(null);
   }
 
   /**
@@ -1602,128 +1812,95 @@ export class SessionController {
    *
    * The transcript is NOT deleted — this abandons the identity, not the
    * history.
-   *
-   * The device's push registration for this visitor is dropped too, or the
-   * signed-out person's replies would keep lighting up a lock screen that is
-   * now somebody else's. Fire-and-forget, so a logout on a dead network is not
-   * held up by it; the token is read before the keys go.
    */
   async resetVisitor(): Promise<void> {
-    const stalePush = this.registeredPushToken ?? this.pushToken;
-    this.registeredPushToken = null;
-    if (stalePush != null) {
-      const token = this.token ?? (await this.readStoredToken());
-      if (token != null) this.unregisterPushBestEffort(token, stalePush);
-    }
+    this.endedSession = null;
     for (const key of StorageKeys.identity) {
       await this.storage.delete(key);
     }
   }
 
-  // ── visitor push ────────────────────────────────────────────────────────
+  // ── resume from an emailed link ─────────────────────────────────────────
 
   /**
-   * The device to notify when an agent replies and this app is closed.
+   * Follow a "Reply in the chat" link from one of the workspace's emails to
+   * the visitor: trade its token for the visitor id that reaches that
+   * conversation (`POST /resume-link`, as the web widget does), become that
+   * visitor, and resume — so the chat on screen is the one the email was
+   * about, on whichever device it was opened.
    *
-   * Call it as soon as the push SDK hands over a token — before a chat exists
-   * is fine, and is the common case. There is no session token to
-   * authenticate a registration with until the visitor opens a conversation,
-   * so it is HELD and sent the moment there is one (every session adoption
-   * and token re-mint retries it, so a registration that failed is not lost
-   * either).
+   * `link` is the URL the host's deep-link handler received — the email's
+   * `…#elc_chat=<token>`, our chat page's `…#resume=<token>` — or the bare
+   * token. Resolves true once that chat is the open session; false, without
+   * throwing and without touching anything, for a link that is not ours, a
+   * token the server refuses (expired, another workspace's, a chat that is
+   * gone), no network, or a signed-in person's link to someone else's chat.
    *
-   * Calling it again with a different token MOVES the registration: the old
-   * one is dropped first, so a token rotation cannot leave a dead row behind
-   * that keeps receiving this person's replies. `null` unregisters. Resolves
-   * once the call has gone out (or been held); never rejects — a visitor who
-   * misses a notification is a smaller failure than a chat that cannot open
-   * because registering threw.
+   * **Who may follow it.** The token names a conversation, not a person, and
+   * whoever holds the emailed link gets what the email showed — so an
+   * anonymous visitor becomes the link's visitor, exactly as the web widget
+   * adopts it: the cached profile goes with the old id, an identity the host
+   * declared without a `userId` stays. A visitor identified with a `userId`
+   * follows a link only to the chat this device's visitor already has. Any
+   * other would be resumed under their verified identity, which the server
+   * then writes onto that conversation's contact: a different signed-in
+   * person would take over someone else's chat.
    */
-  async setPushToken(
-    pushToken: string | null,
-    options: { platform: PushPlatform; appVersion?: string },
-  ): Promise<void> {
-    const next = pushToken == null ? null : pushToken.trim();
-    if (next != null && next.length === 0) return;
-    if (next === this.pushToken && next === this.registeredPushToken) return;
-    this.pushToken = next;
-    // The platform describes a token being registered; `null` keeps the last.
-    if (next != null) {
-      this.pushPlatform = options.platform;
-      this.pushAppVersion = options.appVersion;
-    }
-    await this.syncPush();
-  }
+  async resumeFromLink(link: string): Promise<boolean> {
+    const token = resumeLinkToken(link);
+    if (token == null || this.disposed) return false;
+    try {
+      // Line the stored visitor up with whoever is (or is not) signed in now:
+      // the rule below reads the outcome.
+      await this.settleIdentity();
+      const epoch = this.identityEpoch;
+      const { visitorId } = await this.rest.postResumeLink(token);
+      if (this.disposed || epoch !== this.identityEpoch) return false;
 
-  /**
-   * Bring the server's registration in line with {@link pushToken}: drop a
-   * registration for any other token, then register this one if a session
-   * token can authenticate it. Queued on {@link pushChain}, and decided when
-   * it RUNS rather than when it was asked for, so a burst of rotations
-   * collapses into the right end state.
-   */
-  private syncPush(): Promise<void> {
-    const run = this.pushChain.then(() => this.syncPushNow());
-    this.pushChain = run.catch(() => {
-      // Never poisons the chain; each step already swallows its own failure.
-    });
-    return this.pushChain;
-  }
-
-  private async syncPushNow(): Promise<void> {
-    if (this.disposed) return;
-    const desired = this.pushToken;
-    const registered = this.registeredPushToken;
-    if (registered != null && registered !== desired) {
-      this.registeredPushToken = null;
-      const token = this.token;
-      if (token != null) {
-        try {
-          await this.rest.unregisterPush({ token, pushToken: registered });
-        } catch {
-          // Best effort. The server prunes a token FCM reports as dead anyway.
-        }
+      if (visitorId !== this.visitorIdValue) {
+        if (this.claimUserId != null || this.storedUserId != null) return false;
+        this.adoptLinkedVisitor(visitorId);
+      } else if (this.phase.get() === 'chat' && this.token != null) {
+        // Already in this visitor's chat.
+        return true;
       }
-    }
-    if (desired == null || this.registeredPushToken === desired) return;
-    const token = this.token;
-    const platform = this.pushPlatform;
-    if (token == null || platform == null) return; // Held until a session exists.
-    const epoch = this.identityEpoch;
-    try {
-      await this.rest.registerPush({
-        token,
-        pushToken: desired,
-        platform,
-        // The language the server writes its own wording in ("Sent a photo"):
-        // the content-locale CODE, since `locale` may be a display name the
-        // server cannot match.
-        locale: this.config.contentLocale ?? this.config.locale,
-        appVersion: this.pushAppVersion,
-      });
-      // Registered under the person whose session token it carried. After a
-      // switch that is no longer this visitor, and the new one registers anew.
-      if (epoch === this.identityEpoch) this.registeredPushToken = desired;
+
+      // The ordinary open, which resumes the conversation behind the visitor
+      // id — joining an open already running for this visitor (a chat screen
+      // mounting as the link arrives) rather than racing it.
+      await this.open();
+      return !this.disposed && this.phase.get() === 'chat' && this.token != null;
     } catch {
-      // Left queued: the next session adoption tries again.
+      // Refused, or no network: the chat stays as it was.
+      return false;
     }
   }
 
-  /** Fire-and-forget unregister, for paths that must not wait on the network. */
-  private unregisterPushBestEffort(token: string, pushToken: string): void {
-    this.rest.unregisterPush({ token, pushToken }).catch(() => {
-      // Best effort — see syncPushNow.
+  /**
+   * Become the visitor an emailed link names. Everything the previous one had
+   * in memory goes, as on a person switch; the stored id is replaced and the
+   * cached profile dropped with it (the web widget's `adoptVisitorId`). The
+   * identified user id is left alone — {@link resumeFromLink} only adopts on a
+   * device where nobody is signed in.
+   */
+  private adoptLinkedVisitor(visitorId: string): void {
+    const wasOpen = this.dropVisitorSession();
+    this.visitorIdValue = visitorId;
+    // The server just said there is a conversation behind this id.
+    this.freshVisitor = false;
+    // A cached profile is the previous visitor's. An identity the host declared
+    // is who is using the app now, and stays.
+    if (!this.hasIdentity) {
+      this.profile = null;
+      this.phone = undefined;
+    }
+    this.enqueueStorage(async () => {
+      await this.storage.delete(StorageKeys.token);
+      await this.storage.delete(StorageKeys.conversationId);
+      await this.storage.delete(StorageKeys.profile);
+      await this.storage.write(StorageKeys.visitorId, visitorId);
     });
-  }
-
-  /** The widget token a previous launch left in storage, if any. */
-  private async readStoredToken(): Promise<string | null> {
-    try {
-      const t = await this.storage.read(StorageKeys.token);
-      return t != null && t.length > 0 ? t : null;
-    } catch {
-      return null;
-    }
+    if (wasOpen) this.setPhase('idle');
   }
 
   // ── help articles ───────────────────────────────────────────────────────
@@ -1856,6 +2033,9 @@ export class SessionController {
       onMessageNew: (m) => this.handleMessageNew(m),
       onMessageUpdated: (m) => this.handleMessageUpdated(m),
       onMessageDeleted: (d) => this.forgetUnsent([d.id], d.conversationId),
+      onMessageReactions: (u) => this.handleReactions(u),
+      onQueueUpdate: (u) => this.handleQueueUpdate(u),
+      onConversationAssigned: () => this.leaveQueue(),
       onAgentTyping: (t) => this.handleAgentTyping(t),
       onAssistantTyping: (t) => this.handleAssistantTyping(t),
       onWorkspaceAvailability: (a) => this.applyWorkspaceAvailability(a),
@@ -1930,7 +2110,7 @@ export class SessionController {
     if (existingIdx !== -1) {
       const previous = list[existingIdx] as ChatMessage;
       const next = [...list];
-      next[existingIdx] = withIdentityFrom(msg, previous);
+      next[existingIdx] = withReactionsFrom(withIdentityFrom(msg, previous), previous);
       this.setMessages(dedupSort(next));
       return;
     }
@@ -1961,6 +2141,9 @@ export class SessionController {
     //    seen — never our own echoes, system/bot rows, or anything once the
     //    conversation has moved to the chat/feedback phase.
     this.appendMessage(msg);
+    // Someone from the team (or the assistant) said something: whoever was
+    // waiting in the queue is not any more.
+    if (!isFromCustomer(msg) && msg.senderType !== 'system') this.leaveQueue();
     const p = this.phase.get();
     if (isFromAgent(msg) && p !== 'chat' && p !== 'feedback') {
       this.unreadIds.add(msg.id);
@@ -1987,9 +2170,11 @@ export class SessionController {
     // it; on older servers that copy carries no sender name or photo.
     // Replacing wholesale erased the agent's face from a bubble that already
     // had one — see `withIdentityFrom`.
+    // Likewise a row from a server older than reactions, or a partial one,
+    // carries no `reactions` and must not clear the chips — `withReactionsFrom`.
     const previous = list[idx] as ChatMessage;
     const next = [...list];
-    next[idx] = withIdentityFrom(msg, previous);
+    next[idx] = withReactionsFrom(withIdentityFrom(msg, previous), previous);
     this.setMessages(dedupSort(next));
   }
 
@@ -2038,6 +2223,8 @@ export class SessionController {
       return;
     }
     this.agentTyping.set(true);
+    // Someone is answering: the wait is over even before their first word.
+    this.leaveQueue();
     // The server does relay a real `false`, but the timeout stays as a
     // backstop for a dropped stop event.
     this.typingTimer = setTimeout(() => {
@@ -2061,6 +2248,7 @@ export class SessionController {
     this.assistantTyping.set(isTyping);
     this.agentTyping.set(isTyping);
     if (!isTyping) return;
+    this.leaveQueue();
     this.typingTimer = setTimeout(() => {
       this.agentTyping.set(false);
       this.assistantTyping.set(false);
@@ -2172,8 +2360,6 @@ export class SessionController {
         this.token = res.token;
         this.conversationIdValue = res.conversationId ?? this.conversationIdValue;
         await this.storage.write(StorageKeys.token, res.token);
-        // A registration that failed, or was held, gets another go now.
-        void this.syncPush();
         // Apply the fresh token. A LIVE socket will not re-read its handshake
         // auth on a no-op connect(), so force a fresh handshake — its
         // reconnect (with hasConnectedOnce already true) then owns the gap

@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { Linking, Text, type TextStyle } from 'react-native';
+import { Linking, Text, type TextProps, type TextStyle } from 'react-native';
 
 import { textDirectionOf } from '../bidi';
 
@@ -252,6 +252,12 @@ export interface LinkifiedTextProps {
    * bubble must not switch to the accent colour.
    */
   linkColor: string;
+  /**
+   * Accessibility actions for the whole run — the bubble's "React". On the
+   * text itself, so it stays the one element a screen reader stops on, links
+   * and all.
+   */
+  a11yActions?: Pick<TextProps, 'accessibilityActions' | 'onAccessibilityAction'>;
 }
 
 /**
@@ -259,7 +265,12 @@ export interface LinkifiedTextProps {
  * underlined runs. Plain text renders identically to a bare `<Text>` when
  * nothing is detected.
  */
-export function LinkifiedText({ text, style, linkColor }: LinkifiedTextProps): React.JSX.Element {
+export function LinkifiedText({
+  text,
+  style,
+  linkColor,
+  a11yActions,
+}: LinkifiedTextProps): React.JSX.Element {
   const spans = useMemo(() => detectLinks(text), [text]);
   // Each message faces the way ITS OWN text reads, not the way the workspace
   // does. A thread where the visitor writes Arabic and the agent answers in
@@ -269,7 +280,11 @@ export function LinkifiedText({ text, style, linkColor }: LinkifiedTextProps): R
   const writingDirection = textDirectionOf(text) ?? undefined;
 
   if (spans.length === 0) {
-    return <Text style={[style, writingDirection != null ? { writingDirection } : null]}>{text}</Text>;
+    return (
+      <Text {...a11yActions} style={[style, writingDirection != null ? { writingDirection } : null]}>
+        {text}
+      </Text>
+    );
   }
 
   const linkStyle: TextStyle = {
@@ -302,6 +317,8 @@ export function LinkifiedText({ text, style, linkColor }: LinkifiedTextProps): R
   if (cursor < text.length) children.push(<Text key="tail">{text.slice(cursor)}</Text>);
 
   return (
-    <Text style={[style, writingDirection != null ? { writingDirection } : null]}>{children}</Text>
+    <Text {...a11yActions} style={[style, writingDirection != null ? { writingDirection } : null]}>
+      {children}
+    </Text>
   );
 }

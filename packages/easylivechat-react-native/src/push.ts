@@ -1,70 +1,49 @@
-import { EasyLiveChat } from './client';
-import { EasyLiveChatError, EasyLiveChatErrorCode } from './errors';
 import type { PushPlatform } from './rest-client';
 
 /**
- * The old background-push stub, kept as a thin alias so a host that wired it
- * up keeps compiling.
+ * The old background-push stub's name, kept so a host that wired it up keeps
+ * compiling. Every member does nothing.
  *
- * It said push was a non-goal because the server had nowhere for a VISITOR to
- * register a device. That stopped being true: the server has
- * `POST /api/widget/:slug/push/register` (and the matching unregister), and
- * `EasyLiveChat.instance.setPushToken()` drives it — held until a session can
- * authenticate it, moved on token rotation, dropped on an identity switch and
- * on `reset()`. Everything here forwards to that.
+ * The SDK no longer registers devices: notifications would need the
+ * workspace's Firebase credentials on our servers, and workspaces no longer
+ * hand those over. Your own server sends them, from the workspace's
+ * `message.created` webhook — see `EasyLiveChat.setPushToken` and
+ * "Notifications" in the README.
  *
- * @deprecated Use `EasyLiveChat.instance.setPushToken(token, { platform })`.
+ * @deprecated Remove the calls; notify your users from your own server.
  */
 export const EasyLiveChatPush = {
   /**
-   * True: visitors can be notified now.
+   * False: the SDK does not notify visitors' devices.
    *
    * @deprecated There is nothing left to feature-detect.
    */
   get isSupported(): boolean {
-    return true;
+    return false;
   },
 
   /**
-   * Forwards to `EasyLiveChat.instance.setPushToken(token, options)`.
+   * Does nothing, and resolves at once.
    *
-   * The registration needs the device's platform, which the old stub never
-   * asked for — and the core never imports `react-native`, so it cannot look
-   * `Platform.OS` up itself. Called without one it REJECTS with a message
-   * saying so, rather than resolving as if a device had been registered: a
-   * call that silently does nothing is what this stub used to be.
-   *
-   * @deprecated Use `EasyLiveChat.instance.setPushToken(token, { platform })`.
+   * @deprecated Notify your users from your own server, driven by the
+   * `message.created` webhook.
    */
   registerDeviceToken(
     token: string,
     options: { platform?: PushPlatform; appVersion?: string } = {},
   ): Promise<void> {
-    const platform = options.platform;
-    if (platform == null) {
-      return Promise.reject(
-        new EasyLiveChatError(EasyLiveChatErrorCode.UNKNOWN, {
-          message:
-            "EasyLiveChatPush.registerDeviceToken(token) needs { platform: 'IOS' | 'ANDROID' } " +
-            'now that visitor push is supported — or call ' +
-            'EasyLiveChat.instance.setPushToken(token, { platform }).',
-        }),
-      );
-    }
-    return EasyLiveChat.instance.setPushToken(token, {
-      platform,
-      appVersion: options.appVersion,
-    });
+    void token;
+    void options;
+    return Promise.resolve();
   },
 
   /**
-   * Forwards to `EasyLiveChat.instance.setPushToken(null, …)`: stop notifying
-   * this device.
+   * Does nothing, and resolves at once.
    *
-   * @deprecated Use `EasyLiveChat.instance.setPushToken(null, { platform })`.
+   * @deprecated Notify your users from your own server, driven by the
+   * `message.created` webhook.
    */
   unregisterDeviceToken(): Promise<void> {
-    // The platform describes a token being registered; with none it is unread.
-    return EasyLiveChat.instance.setPushToken(null, { platform: 'ANDROID' });
+    return Promise.resolve();
   },
 } as const;

@@ -27,7 +27,10 @@ stand-in that renders:
 - the platform APIs the SDK calls (`Platform`, `I18nManager`, `Linking`,
   `AccessibilityInfo`, `Keyboard`, `Dimensions`, …) are present; `Linking`,
   `AccessibilityInfo.announceForAccessibility` and `Keyboard.dismiss` are
-  `vi.fn()`s to assert on.
+  `vi.fn()`s to assert on;
+- the device is light: `Appearance.__setColorScheme('dark')` (inside `act`)
+  turns it dark, and `useColorScheme` follows it live, as on a device — put it
+  back in `afterEach`.
 
 An API the stand-in does not list **throws on use**. That is deliberate — it
 keeps the core honest about not depending on React Native, and it means a new
@@ -67,8 +70,10 @@ Helpers in `packages/easylivechat-react-native-ui/test/support.ts`:
 `message()` builds a `ChatMessage` from its wire shape through the core's own
 parser; `bootOffline()` boots the SDK with in-memory storage and no network
 (a send fails locally, as with no connection); `setMessages()` /
-`setVisitorMode()` put a transcript or an availability on screen; `flush()`
-drains microtasks (fake-timer safe), `settle()` waits out a lazy `import()`.
+`setVisitorMode()` put a transcript or an availability on screen, and
+`setConnection()`, `setWidgetConfig()`, `setQueue()` and `setUnread()` the rest
+of what the controller holds; `flush()` drains microtasks (fake-timer safe),
+`settle()` waits out a lazy `import()`.
 
 **There is no layout engine**, so nothing has a position. RTL is asserted the
 way the SDK implements it: it never relies on the host's direction and writes

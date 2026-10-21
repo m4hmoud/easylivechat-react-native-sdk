@@ -9,7 +9,7 @@ import { Linking, Platform, StyleSheet, Text, type TextStyle, View } from 'react
 
 import { type Direction, directionStyles, useDirection } from '../direction';
 import { BrokenImageIcon } from '../icons';
-import { type EasyLiveChatTheme, withAlpha } from '../theme';
+import { type EasyLiveChatTheme, inkOf, withAlpha } from '../theme';
 import { RemoteImage } from './remote-image';
 
 /**
@@ -157,7 +157,7 @@ function BlockView({
     case 'quote':
       return (
         <View style={[styles.block, { flexDirection: ds.row }]}>
-          <View style={[styles.quoteBar, { backgroundColor: withAlpha(theme.primary, 0.45) }]} />
+          <View style={[styles.quoteBar, { backgroundColor: withAlpha(inkOf(theme), 0.45) }]} />
           <View style={styles.quoteBody}>
             {block.children.map((child, i) => (
               <BlockView
@@ -253,7 +253,7 @@ function renderInlines(
             key={i}
             accessibilityRole="link"
             onPress={() => onOpen(node.href)}
-            style={[styles.link, { color: theme.primary, textDecorationColor: theme.primary }]}
+            style={[styles.link, { color: inkOf(theme), textDecorationColor: inkOf(theme) }]}
           >
             {renderInlines(node.children, theme, onOpen)}
           </Text>

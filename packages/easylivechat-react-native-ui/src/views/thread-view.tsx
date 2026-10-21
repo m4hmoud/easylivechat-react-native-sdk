@@ -3,12 +3,14 @@ import {
   EasyLiveChat,
   botButtonsOf,
   buttonsOpen,
+  canReactTo,
   chosenButtonId,
   isFromCustomer,
   quickRepliesOnOffer,
   useAgentLastReadAt,
   useAgentTyping,
   useAssistantTyping,
+  useConnectionState,
   useEasyLiveChatMessages,
   useWidgetConfig,
   useWorkspaceAvailability,
@@ -61,7 +63,13 @@ export function ThreadView({ theme, strings }: ThreadViewProps): React.JSX.Eleme
   // Subscribed, not read off the client at render time: the workspace can
   // switch to "notice only" mid-chat, and the chips must go dead with it.
   const { composerLocked } = useWorkspaceAvailability();
+  // A reaction goes over the socket, so it is only offered while there is one
+  // — the widget's `connected && !composerLocked`.
+  const connected = useConnectionState() === 'connected';
   const dir = useDirectionStyles();
+
+  /** The message whose quick reactions are open — one at a time. */
+  const [reactingTo, setReactingTo] = useState<string | null>(null);
 
   const listRef = useRef<FlatListType<ChatMessage>>(null);
   const lastCount = useRef(messages.length);
@@ -170,6 +178,15 @@ export function ThreadView({ theme, strings }: ThreadViewProps): React.JSX.Eleme
     }
   }, []);
 
+  const react = useCallback((messageId: string, emoji: string | null) => {
+    setReactingTo(null);
+    // Shown at once by the core, and put back there if the server refuses.
+    void EasyLiveChat.instance.react(messageId, emoji);
+  }, []);
+
+  const showLinkPreviews = config?.linkPreviews !== false;
+  const reactionsOn = connected && !composerLocked;
+
   const renderItem = useCallback(
     ({ item }: { item: ChatMessage }) => {
       // Quick replies only under the newest message; reply buttons (a bot's,
@@ -178,6 +195,7 @@ export function ThreadView({ theme, strings }: ThreadViewProps): React.JSX.Eleme
       const hasButtons = botButtonsOf(item) != null || item.contentType === 'card';
       const open = hasButtons && buttonsOpen(messages, item.id);
       const locked = sending || composerLocked;
+      const reactable = reactionsOn && canReactTo(item);
       return (
         <MessageBubble
           message={item}
@@ -192,6 +210,12 @@ export function ThreadView({ theme, strings }: ThreadViewProps): React.JSX.Eleme
           showButtons
           chosenButtonId={hasButtons ? chosenButtonId(messages, item.id) : null}
           onButton={!open || locked ? null : (id, label) => void sendButton(item, id, label)}
+          showLinkPreview={showLinkPreviews}
+          onReact={reactable ? (emoji) => react(item.id, emoji) : null}
+          reacting={reactable && reactingTo === item.id}
+          onToggleReactions={
+            reactable ? () => setReactingTo((open) => (open === item.id ? null : item.id)) : null
+          }
         />
       );
     },
@@ -207,6 +231,10 @@ export function ThreadView({ theme, strings }: ThreadViewProps): React.JSX.Eleme
       composerLocked,
       sendQuickReply,
       sendButton,
+      showLinkPreviews,
+      reactionsOn,
+      reactingTo,
+      react,
     ],
   );
 

@@ -7,6 +7,53 @@ import {
 } from './post-chat-form';
 import { type PreChatForm, DISABLED_PRE_CHAT_FORM, parsePreChatForm } from './pre-chat-form';
 
+/**
+ * Light, dark, or following the visitor's own setting (`auto`) — the
+ * workspace's choice in Widget settings.
+ */
+export type WidgetColorScheme = 'auto' | 'light' | 'dark';
+
+/**
+ * The scheme a config asks for. A server older than the setting sends nothing,
+ * which reads as `light` — what every widget was before it — so a missing
+ * field never changes anyone's look. (New workspaces default to `auto`;
+ * existing ones were kept on `light` until their admin chooses.)
+ */
+export function parseColorScheme(v: unknown): WidgetColorScheme {
+  return v === 'auto' || v === 'light' || v === 'dark' ? v : 'light';
+}
+
+/** The scheme to paint, given the workspace's choice and the device's appearance. */
+export function resolveColorScheme(
+  choice: WidgetColorScheme,
+  deviceDark: boolean,
+): 'light' | 'dark' {
+  if (choice === 'auto') return deviceDark ? 'dark' : 'light';
+  return choice;
+}
+
+/** The launcher's size: `small` 48, `medium` 56 (the size it always was), `large` 64. */
+export type LauncherSize = 'small' | 'medium' | 'large';
+
+/** The launcher's diameter — and the pill's height — in points, per size. */
+export const LAUNCHER_PX: Readonly<Record<LauncherSize, number>> = { small: 48, medium: 56, large: 64 };
+
+/** "Chat with us" — a few words beside the launcher's icon, never a sentence. */
+export const LAUNCHER_LABEL_MAX = 40;
+
+function parseLauncherSize(v: unknown): LauncherSize {
+  return v === 'small' || v === 'large' ? v : 'medium';
+}
+
+/** Collapsed to one line and capped, as the server and the web loader do; undefined when empty. */
+function cleanLauncherLabel(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  const one = v.replace(/\s+/g, ' ').trim();
+  if (one.length === 0) return undefined;
+  const capped = Array.from(one).slice(0, LAUNCHER_LABEL_MAX).join('').trim();
+  return capped.length > 0 ? capped : undefined;
+}
+
 /** What the visitor may do, decided server-side. */
 export type VisitorMode = 'CHAT' | 'LEAVE_MESSAGE' | 'NOTICE_ONLY';
 
@@ -41,6 +88,18 @@ export interface WidgetConfig {
   welcomeTitle: string;
   welcomeSubtitle: string;
   offlineMessage: string;
+
+  /**
+   * The business's own closed notice (Settings → Availability), in the
+   * visitor's language — or undefined when the workspace has written none.
+   *
+   * Not the same thing as {@link offlineMessage}: that one is the
+   * leave-a-message prompt from the widget's copy, and carries a schema
+   * default nobody typed. The closed/busy notice shows THIS when it is set —
+   * the business's words always win — and the SDK's own localized notice when
+   * it is not.
+   */
+  offlineInfoText?: string;
 
   /**
    * Stands in for `%name%` when the visitor has not identified. Set by the
@@ -85,6 +144,29 @@ export interface WidgetConfig {
    * which reads as false — nothing is offered that cannot be served.
    */
   helpArticlesEnabled: boolean;
+
+  /**
+   * Light, dark, or following the device (`auto`). Absent on an older server,
+   * which reads as `light`. Resolve it with {@link resolveColorScheme}.
+   */
+  colorScheme: WidgetColorScheme;
+
+  /**
+   * Draw the preview card under a message with a link in it
+   * (`linkPreviewOf`). On by default; absent on an older server, which reads
+   * as on — a preview only exists where the server made one.
+   */
+  linkPreviews: boolean;
+
+  /**
+   * Words beside the launcher's icon ("Chat with us"), in the visitor's
+   * language — tenant-authored, so drawn VERBATIM. Undefined for the plain
+   * round launcher.
+   */
+  launcherLabel?: string;
+
+  /** The launcher's size; `medium` when the server does not say. */
+  launcherSize: LauncherSize;
 }
 
 function nonEmpty(raw: Record<string, unknown>, key: string, fallback: string): string {
@@ -116,6 +198,7 @@ export function parseWidgetConfig(raw: Record<string, unknown>): WidgetConfig {
     welcomeTitle: nonEmpty(raw, 'welcomeTitle', 'Chat with us'),
     welcomeSubtitle: nonEmpty(raw, 'welcomeSubtitle', "We're here to help"),
     offlineMessage: nonEmpty(raw, 'offlineMessage', "We're offline — leave a message"),
+    offlineInfoText: trimmedOrUndefined(raw.offlineInfoText),
     defaultCustomerName: trimmedOrUndefined(raw.defaultCustomerName),
     position: nonEmpty(raw, 'position', 'bottom-right'),
     locale: nonEmpty(raw, 'locale', 'en'),
@@ -137,6 +220,10 @@ export function parseWidgetConfig(raw: Record<string, unknown>): WidgetConfig {
       ? raw.allowedOrigins.map((o) => String(o))
       : [],
     helpArticlesEnabled: raw.helpArticlesEnabled === true,
+    colorScheme: parseColorScheme(raw.colorScheme),
+    linkPreviews: raw.linkPreviews !== false,
+    launcherLabel: cleanLauncherLabel(raw.launcherLabel),
+    launcherSize: parseLauncherSize(raw.launcherSize),
   };
 }
 
@@ -267,6 +354,17 @@ export interface ConfigResponse {
    * {@link WorkspaceAvailability.assistantCovers}.
    */
   assistantCovers: boolean;
+  /**
+   * The workspace offers "Email me this chat" — see
+   * `EasyLiveChat.emailTranscript`. Absent on an older server: not offered.
+   */
+  transcriptEmailEnabled: boolean;
+  /**
+   * The workspace offers "Get the reply by email" — see
+   * `EasyLiveChat.setVisitorEmail`: ask for an address while nobody can
+   * answer. Absent on an older server: not offered.
+   */
+  replyEmailEnabled: boolean;
 }
 
 /** True when the tenant chose to show a notice and take nothing. */
@@ -323,6 +421,8 @@ export function parseConfigResponse(raw: Record<string, unknown>): ConfigRespons
     // Absent on a server that predates the assistant: false, so nothing claims
     // an answer is coming that nobody will send.
     assistantCovers: raw.assistantCovers === true,
+    transcriptEmailEnabled: raw.transcriptEmailEnabled === true,
+    replyEmailEnabled: raw.replyEmailEnabled === true,
   };
 }
 

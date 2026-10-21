@@ -408,6 +408,43 @@ export function ChatBubbleIcon({ color, size = 26 }: IconProps): React.JSX.Eleme
   );
 }
 
+/** An envelope — "Email me this chat". Not mirrored: it is not directional. */
+export function MailIcon({ color, size = 20 }: IconProps): React.JSX.Element {
+  const s = size;
+  const thickness = Math.max(1.5, s * 0.09);
+  return (
+    <IconBox size={s}>
+      <View
+        style={{
+          position: 'absolute',
+          width: s * 0.86,
+          height: s * 0.64,
+          borderRadius: s * 0.1,
+          borderWidth: thickness,
+          borderColor: color,
+        }}
+      />
+      {/* The flap: from each top corner down to the middle. */}
+      <Bar
+        color={color}
+        width={s * 0.5}
+        height={thickness}
+        rotate={36}
+        translateX={-s * 0.19}
+        translateY={-s * 0.13}
+      />
+      <Bar
+        color={color}
+        width={s * 0.5}
+        height={thickness}
+        rotate={-36}
+        translateX={s * 0.19}
+        translateY={-s * 0.13}
+      />
+    </IconBox>
+  );
+}
+
 /** A bin — throw the recording away. */
 export function TrashIcon({ color, size = 22 }: IconProps): React.JSX.Element {
   const body = size * 0.5;

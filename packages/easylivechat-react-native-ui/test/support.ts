@@ -5,7 +5,13 @@
  * shape, so a field the model gains later is filled in the way production
  * fills it rather than missing from a hand-built literal.
  */
-import { type ChatMessage, EasyLiveChat, parseChatMessage } from '@easylivechat/react-native';
+import {
+  type ChatMessage,
+  type QueueStatus,
+  type WidgetConfig,
+  EasyLiveChat,
+  parseChatMessage,
+} from '@easylivechat/react-native';
 import { act } from '@testing-library/react-native';
 import type { ReactTestInstance } from 'react-test-renderer';
 
@@ -80,6 +86,15 @@ function controllerStores(): {
   nextOpenLocal: WritableStore<string | null>;
   nextOpenAt: WritableStore<Date | null>;
   assistantCovers: WritableStore<boolean>;
+  connection: WritableStore<string>;
+  widgetConfig: WritableStore<WidgetConfig | null>;
+  queue: WritableStore<QueueStatus | null>;
+  unreadCount: WritableStore<number>;
+  phase: WritableStore<string>;
+  agentsAccepting: WritableStore<boolean>;
+  transcriptEmailEnabled: WritableStore<boolean>;
+  replyEmailEnabled: WritableStore<boolean>;
+  conversationIdValue: string | null;
 } {
   const controller = (EasyLiveChat.instance as unknown as { controller: unknown }).controller;
   if (controller == null) throw new Error('bootOffline() first');
@@ -96,6 +111,51 @@ export function currentMessages(): readonly ChatMessage[] {
 
 export function setVisitorMode(mode: 'CHAT' | 'NOTICE_ONLY'): void {
   act(() => controllerStores().visitorMode.set(mode));
+}
+
+/** The `/widgets` socket's state, as the thread sees it — reactions need `connected`. */
+export function setConnection(state: 'connected' | 'disconnected'): void {
+  act(() => controllerStores().connection.set(state));
+}
+
+/** The widget config a `GET /config` would have left, or none. */
+export function setWidgetConfig(config: WidgetConfig | null): void {
+  act(() => controllerStores().widgetConfig.set(config));
+}
+
+/** Where the visitor stands in the queue, as the session or `queue:update` left it. */
+export function setQueue(queue: QueueStatus | null): void {
+  act(() => controllerStores().queue.set(queue));
+}
+
+export function setUnread(count: number): void {
+  act(() => controllerStores().unreadCount.set(count));
+}
+
+/** The chat phase, as the session's state machine would leave it. */
+export function setPhase(phase: 'idle' | 'chat' | 'feedback' | 'prechat' | 'offline'): void {
+  act(() => controllerStores().phase.set(phase));
+}
+
+/**
+ * The conversation the session is in — what `EasyLiveChat.conversationId`
+ * reads. Not a store: views re-read it on their next render.
+ */
+export function setConversation(id: string | null): void {
+  controllerStores().conversationIdValue = id;
+}
+
+/** The workspace's two email switches, as `GET /config` left them. */
+export function setEmailOffers(offers: { transcript?: boolean; reply?: boolean }): void {
+  act(() => {
+    const c = controllerStores();
+    c.transcriptEmailEnabled.set(offers.transcript ?? false);
+    c.replyEmailEnabled.set(offers.reply ?? false);
+  });
+}
+
+export function setAgentsAccepting(accepting: boolean): void {
+  act(() => controllerStores().agentsAccepting.set(accepting));
 }
 
 /**

@@ -111,6 +111,7 @@ boot()  →  open()  →  [prechat] → chat → feedback
 | `widgetConfig` | `useWidgetConfig` | `WidgetConfig \| null` | Colours, copy, forms from the dashboard |
 | `agentLastReadAt` | `useAgentLastReadAt` | `Date \| null` | Read ticks (see Read receipts) |
 | `isOpen`, `visitorMode`, `assistantCovers`, … | `useWorkspaceAvailability` | one object | Whether the workspace is taking chats, and what to say if not |
+| `transcriptEmailEnabled`, `replyEmailEnabled` | `useTranscriptEmailEnabled`, `useReplyEmailEnabled` | `boolean` | Whether to offer the two emails (see Emails to the visitor) |
 
 `ChatPhase` is `idle`, `loading`, `resuming`, `prechat`, `chat`, `feedback`,
 `offline`. `ConnectionState` is `disconnected`, `connecting`, `connected`,
@@ -294,10 +295,9 @@ await EasyLiveChat.instance.reset({ storage });
   contact and resumes the *same* conversation. That is right for a returning
   customer and wrong for a signed-out one — on a shared device (a restaurant
   tablet, a POS terminal) the next person would inherit the last one's
-  identity. `reset()` drops every identity key, and the device's push
-  registration for that visitor, and works even when the SDK was never booted
-  this session, which is the common case for a logout that never opened the
-  chat.
+  identity. `reset()` drops every identity key, and works even when the SDK
+  was never booted this session, which is the common case for a logout that
+  never opened the chat.
 - The transcript is **not** deleted. This abandons the identity, not the
   history.
 
@@ -391,6 +391,215 @@ const offer = quickRepliesOnOffer(messages);
 // offer?.replies under the message offer.messageId; a tap is sendMessage(reply).
 ```
 
+## Reactions
+
+The visitor can react to the team's messages — one emoji per message, as on
+WhatsApp: another replaces theirs, the same one takes it back — and sees the
+team's reactions on their own messages. Never an agent's name: the server sends
+only the visitor's view.
+
+```ts
+import {
+  QUICK_REACTIONS, // ['👍', '❤️', '😂', '😮', '😢', '🙏'], the quick row on every client
+  canReactTo,
+  groupReactions,
+  reactionsOf,
+  toggledReaction,
+} from '@easylivechat/react-native';
+
+// Chips under a bubble: one per emoji, `mine` for the visitor's own.
+for (const chip of groupReactions(reactionsOf(message))) {
+  // chip.emoji, chip.count, chip.mine
+}
+
+// A tap on 👍 under one of the team's messages — sets it, or takes it back.
+if (canReactTo(message)) {
+  await EasyLiveChat.instance.react(message.id, toggledReaction(message, '👍'));
+}
+```
+
+`react()` shows the change at once and puts it back if the server refuses
+(resolving `false`; it never rejects). Reactions arriving from the team — or
+from the visitor's other device — land on `message.reactions` by themselves,
+live (`message:reactions`); a reaction is not a message, so it moves no unread
+count and fires no `onMessage`.
+
+## Link previews
+
+When a message carries a link the server fetches the page once and stores a
+preview on the message, usually a moment after it arrives
+(`message:updated`). Read it — checked — with `linkPreviewOf`:
+
+```ts
+import { linkPreviewOf } from '@easylivechat/react-native';
+
+const preview = config?.linkPreviews !== false ? linkPreviewOf(message) : null;
+// preview.url (http/https only), preview.title, preview.description?,
+// preview.siteName, preview.imageUrl? (an /uploads/… path: resolveUrl it).
+```
+
+Everything in a preview was written by a stranger's page: it is text, capped
+in length, and the picture is the server's own upload or https. A card message
+never has one.
+
+## Light and dark
+
+`widgetConfig.colorScheme` is the workspace's choice: `light`, `dark`, or
+`auto` — follow the device. A server older than the setting sends nothing,
+which reads as `light`.
+
+```ts
+import { resolveColorScheme } from '@easylivechat/react-native';
+import { useColorScheme } from 'react-native';
+
+const scheme = resolveColorScheme(config.colorScheme, useColorScheme() === 'dark');
+```
+
+The UI package derives the dark palette from your workspace's colours the way
+the web widget does; the launcher's `launcherSize` and `launcherLabel` come
+with the same config.
+
+## Waiting in the queue
+
+While the visitor waits for a person, `queue` says where they stand — place,
+an estimate in minutes, and the workspace's own notice with both already
+filled in by the server, in the visitor's language. It is a notice above the
+conversation, never a screen of its own, and it clears itself the moment
+anyone from the team is there: the chat assigned, a team message, someone (or
+the assistant) typing.
+
+```ts
+const queue = useQueueStatus(); // or EasyLiveChat.instance.queue
+if (queue) {
+  // queue.text — verbatim; queue.position (0 = unknown); queue.minutes (0 = unknown)
+}
+```
+
+## Emails to the visitor
+
+The web widget's two emails, over the same endpoints. Offer each only while its
+switch is on in the workspace — `transcriptEmailEnabled` and
+`replyEmailEnabled` (stores, `useTranscriptEmailEnabled()` /
+`useReplyEmailEnabled()`, and on `ConfigResponse`; false from an older server).
+Addresses come back masked, `j•••@example.com`: the device may not be the
+visitor's own. All three need a conversation, and reject `NO_TOKEN` before
+there is one.
+
+**Email me this chat** — this conversation, or, on the screen after the chat,
+the one that just ended:
+
+```ts
+const { emailHint } = await EasyLiveChat.instance.visitorEmail(); // null: none on file
+
+await EasyLiveChat.instance.emailTranscript();                            // to the address on file
+const { sentTo } = await EasyLiveChat.instance.emailTranscript({ email: 'jo@example.com' });
+```
+
+It rejects with the server's code: `NO_CONTACT_EMAIL` (no address given and
+none on file — ask for one), `INVALID_EMAIL`, `EMAIL_UNSUBSCRIBED`,
+`TRANSCRIPT_RATE_LIMITED`.
+
+**Get the reply by email** — ask once the visitor has written while nobody can
+answer (you are closed, they are waiting in the queue, or nobody is
+accepting), and only when `visitorEmail()` found no address:
+
+```ts
+const { emailHint } = await EasyLiveChat.instance.setVisitorEmail('jo@example.com');
+```
+
+The address goes on the visitor's contact. If they have left by the time the
+team answers, the reply is emailed to them with a **Reply in the chat** link
+back into the conversation (see Resume from an emailed link). It rejects with
+`INVALID_EMAIL` or `EMAIL_UNSUBSCRIBED`. An identity-verified visitor keeps
+the address already on file; the answer then names that one.
+
+The UI package draws both, by the widget's rules.
+
+## Resume from an emailed link
+
+The **Reply in the chat** link in those emails is your site's address with
+`#elc_chat=<token>` on the end — or our own chat page with `#resume=<token>`,
+for a workspace whose widget is on no site of its own. On the web the widget
+opens that conversation. In your app, hand the URL to `resumeFromLink`: it
+trades the token with the server for the visitor that conversation belongs to,
+becomes that visitor, and resumes — so the chat screen opens on the
+conversation the email was about, on whichever device it was opened.
+
+```ts
+const opened = await EasyLiveChat.instance.resumeFromLink(url); // or the bare token
+```
+
+It resolves `true` once that chat is the open session, and `false` — never
+throwing, and changing nothing — for a URL that is not one of ours (answered at
+once, with no request, so every link can be tried), a token the server refuses
+(expired, another workspace's, a chat that is gone), or no network.
+`resumeLinkToken(url)` says synchronously whether a URL carries a token at all.
+
+For the email's link to reach your app, the app has to own your site's links —
+universal links (Associated Domains) on iOS, App Links on Android, for the
+domain the email points to. The token rides in the URL's fragment, which both
+hand over with the URL.
+
+**With expo-router**, in the root layout:
+
+```tsx
+// app/_layout.tsx
+import * as Linking from 'expo-linking';
+import { Stack, router } from 'expo-router';
+import { useEffect } from 'react';
+import { EasyLiveChat, resumeLinkToken } from '@easylivechat/react-native';
+
+export default function RootLayout() {
+  const url = Linking.useURL(); // the link that launched the app, then each one after
+  useEffect(() => {
+    if (url == null || resumeLinkToken(url) == null) return;
+    void EasyLiveChat.instance.resumeFromLink(url).then((opened) => {
+      if (opened) router.push('/support'); // your chat screen
+    });
+  }, [url]);
+  return <Stack />;
+}
+```
+
+expo-router matches the link's own path too — `/` for a link to your home page
+— so the visitor lands on that route first and is taken on to the chat.
+
+**With React Navigation** (and React Native's own `Linking`):
+
+```tsx
+import { useEffect } from 'react';
+import { Linking } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import { EasyLiveChat, resumeLinkToken } from '@easylivechat/react-native';
+
+export function useEmailedChatLinks(): void {
+  const navigation = useNavigation();
+  useEffect(() => {
+    const follow = (url: string | null) => {
+      if (url == null || resumeLinkToken(url) == null) return;
+      void EasyLiveChat.instance.resumeFromLink(url).then((opened) => {
+        if (opened) navigation.navigate('Support' as never); // your chat screen
+      });
+    };
+    void Linking.getInitialURL().then(follow); // the link that launched the app
+    const sub = Linking.addEventListener('url', ({ url }) => follow(url));
+    return () => sub.remove();
+  }, [navigation]);
+}
+```
+
+If your `NavigationContainer` has a `linking` config for the same domain, leave
+these URLs out of it, or it routes them as well.
+
+Calling it before `boot()` is fine — the link that launched the app usually
+arrives first: it is held and followed once boot has run. Declare the identity
+first, as before any open: **an anonymous visitor** (or one identified without
+a `userId`) becomes the link's visitor — whoever holds the emailed link gets
+what the email showed, the web widget's rule — while **a visitor identified
+with a `userId`** only follows a link to the chat this device already holds,
+and gets `false` for any other: resumed under their verified identity, someone
+else's conversation would become theirs.
+
 ## Help articles
 
 ```ts
@@ -407,49 +616,60 @@ if (config?.helpArticlesEnabled) {
 `parseHelpMarkdown(article.body)`, never as HTML (the UI package's
 `HelpMarkdownView` does).
 
-## Push notifications
+## Notifications
 
-A reply that lands while your app is closed can ring the visitor's phone. Hand
-the SDK the Firebase (FCM) token your app already receives — the server sends
-through FCM on iOS too:
+The SDK does not register devices for notifications. Sending them from our
+servers would need your Firebase credentials, and workspaces no longer hand
+those over. Notifying your app's users is your own server's job, with the push
+setup your app already has — and the workspace tells your server when:
+
+1. Sign your users in to the chat with the id your server knows them by:
+   `identify({ userId, userHash })` (see Identity verification). Only a
+   verified id is ever handed back — `contact.userId` is `null` otherwise.
+2. In the dashboard, **Settings → Webhooks**, add an endpoint on your server
+   subscribed to `message.created`.
+3. For each delivery that is a reply from the team — `data.message.senderType`
+   `AGENT` (a person) or `BOT` (the AI assistant) — and whose
+   `data.contact.userId` is set, send your own push to that user's devices.
 
 ```ts
-import messaging from '@react-native-firebase/messaging';
-import { Platform } from 'react-native';
+// Your server — Express here; any framework does.
+import { createHmac, timingSafeEqual } from 'node:crypto';
 
-const token = await messaging().getToken();
-await EasyLiveChat.instance.setPushToken(token, {
-  platform: Platform.OS === 'ios' ? 'IOS' : 'ANDROID',
-  appVersion: '2.4.0', // optional
+app.post('/webhooks/easylivechat', express.raw({ type: 'application/json' }), async (req, res) => {
+  const body = req.body.toString('utf8');
+  const timestamp = req.header('X-Easylivechat-Timestamp') ?? '';
+  const expected = `sha256=${createHmac('sha256', process.env.EASYLIVECHAT_WEBHOOK_SECRET!)
+    .update(`${timestamp}.${body}`)
+    .digest('hex')}`;
+  const given = req.header('X-Easylivechat-Signature-V2') ?? '';
+  const fresh = Math.abs(Date.now() / 1000 - Number(timestamp)) < 300; // refuse a replay
+  if (!fresh || given.length !== expected.length || !timingSafeEqual(Buffer.from(given), Buffer.from(expected))) {
+    return res.sendStatus(401);
+  }
+  res.sendStatus(200); // answer at once; a failed delivery is retried
+
+  const { id, event, data } = JSON.parse(body);
+  if (event !== 'message.created') return;
+  const { conversationId, message, contact } = data;
+  if (message.senderType !== 'AGENT' && message.senderType !== 'BOT') return; // the visitor's own, a notice
+  if (!contact?.userId) return; // not one of your signed-in users
+  if (await alreadySent(id)) return; // a retry carries the same id
+  await sendPushToUser(contact.userId, {
+    title: 'New reply',
+    body: message.body || 'Sent an attachment',
+    data: { conversationId },
+  });
 });
 ```
 
-The SDK adds no push dependency of its own, so your project keeps one Firebase
-setup and one permission prompt. Call it as soon as you have a token — before
-`boot()` or before the visitor has opened a chat is fine, and the normal case:
-the registration is held until there is a session to authenticate it with.
-Call it again when the token rotates (the old registration is dropped first),
-and pass `null` to stop. An identity switch, `clearIdentity()` for a
-`userId`-identified visitor and `reset()` drop the previous person's
-registration by themselves; the token itself is kept for the next person's
-session.
+In the app, skip the notification when the chat is already on screen — the
+app is the only thing that knows — and open the chat on a tap (your chat
+screen, or `EasyLiveChat.instance.open()`).
 
-The notification is always sent. Nothing is suppressed server-side, because a
-connected socket is not a person looking at the screen — skip it in your own
-foreground handler when the chat is already on screen:
-
-```ts
-messaging().onMessage(async (m) => {
-  if (m.data?.type === 'visitor.message' && chatIsVisible) return;
-  // …otherwise show it yourself.
-});
-```
-
-`data` carries `type`, `conversationId`, `messageId` and `tenantId`, so a tap
-can open the right conversation (`EasyLiveChat.instance.open()`).
-
-> `EasyLiveChatPush` — the stub earlier versions shipped while push was not
-> possible — is kept as a deprecated alias that forwards to `setPushToken`.
+`setPushToken()` and `EasyLiveChatPush` are kept as deprecated no-ops so an
+app that calls them keeps compiling: nothing is sent and nothing is kept.
+Remove the calls.
 
 ## Errors
 
@@ -516,7 +736,7 @@ Call `markRead()` while the thread is on screen — it clears the local badge
 
 **"EasyLiveChat.boot() must be called before use."** An action (`open()`,
 `sendMessage()` …) ran before `boot()` resolved. Await it during startup.
-`identify()`, `clearIdentity()`, `setPushToken()`, `supportsConsent`, the
+`identify()`, `clearIdentity()`, `resumeFromLink()`, `supportsConsent`, the
 `on…` subscriptions, the stores and the hooks are safe before boot.
 
 **The visitor is new on every launch.** You are on `InMemoryStorage` — see
